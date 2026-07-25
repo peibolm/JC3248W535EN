@@ -10,6 +10,19 @@
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 
+#include "storage_sd.h"
+#include "sd_provision.h"
+#include "csv_master.h"
+#include "csv_inventory.h"
+#include "app_events.h"
+#include "ui_screens.h"
+#include "app_fsm.h"
+#include "nfc_task.h"
+#include "scale_task.h"
+
+#define DATOS_MAESTROS_PATH "/sdcard/datos_maestros.csv"
+#define INVENTARIO_PATH     "/sdcard/inventario.csv"
+
 static const char *TAG = "DEMO_LVGL";
 
 #define BUILD (String(__DATE__) + " - " + String(__TIME__)).c_str()
@@ -27,13 +40,6 @@ static const char *TAG = "DEMO_LVGL";
  *
  */
 #define LVGL_PORT_ROTATION_DEGREE (90)
-
-/**
- * To use the built-in examples and demos of LVGL uncomment the includes below respectively.
- * You also need to copy `lvgl/examples` to `lvgl/src/examples`. Similarly for the demos `lvgl/demos` to `lvgl/src/demos`.
- */
-#include <demos/lv_demos.h>
-// #include <examples/lv_examples.h>
 
 void setup();
 
@@ -94,31 +100,43 @@ void setup()
 #endif
   };
 
-  bsp_display_start_with_config(&cfg);
+  lv_disp_t *disp = bsp_display_start_with_config(&cfg);
   bsp_display_backlight_on();
 
   logSection("Create UI");
-  /* Lock the mutex due to the LVGL APIs are not thread-safe */
-  bsp_display_lock(0);
+  ui_screens_init(disp);
 
-  /**
-   * Try an example. Don't forget to uncomment header.
-   * See all the examples online: https://docs.lvgl.io/master/examples.html
-   * source codes: https://github.com/lvgl/lvgl/tree/e7f88efa5853128bf871dde335c0ca8da9eb7731/examples
-   */
-  //  lv_example_btn_1();
+  logSection("Mount microSD and load CSV data");
+  if (storage_sd_mount() != ESP_OK) {
+    ui_show_fatal_error("No se detecta la tarjeta microSD. Reinicie.");
+    return;
+  }
+  /* Solo crea datos_maestros.csv (vacio, con cabecera) si no existe ya en
+   * la SD; los articulos se dan de alta desde la app. */
+  sd_provision_ensure_master_header(DATOS_MAESTROS_PATH);
+  if (csv_master_load(DATOS_MAESTROS_PATH) != ESP_OK) {
+    ui_show_fatal_error("No se pudo cargar datos_maestros.csv de la SD.");
+    return;
+  }
+  if (csv_inventory_init(INVENTARIO_PATH) != ESP_OK) {
+    ui_show_fatal_error("No se pudo abrir/crear inventario.csv en la SD.");
+    return;
+  }
 
-  /**
-   * Or try out a demo.
-   * Don't forget to uncomment header and enable the demos in `lv_conf.h`. E.g. `LV_USE_DEMOS_WIDGETS`
-   */
-  lv_demo_widgets();
-  //     lv_demo_benchmark();
-  // lv_demo_music();
-  // lv_demo_stress();
+  logSection("Start app tasks");
+  app_events_init();
+  app_fsm_start();
 
-  /* Release the mutex */
-  bsp_display_unlock();
+  if (nfc_task_start() != ESP_OK) {
+    ESP_LOGE(TAG, "No se pudo iniciar el lector NFC (PN532)");
+    ui_show_fatal_error("Fallo al iniciar el lector NFC. Revise el cableado y reinicie.");
+    return;
+  }
+  if (scale_task_start() != ESP_OK) {
+    ESP_LOGE(TAG, "No se pudo iniciar la UART de la bascula");
+    ui_show_fatal_error("Fallo al iniciar la bascula. Revise el cableado y reinicie.");
+    return;
+  }
 
   logSection("LVGL porting example end");
 }

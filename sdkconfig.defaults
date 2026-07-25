@@ -1,2 +1,8 @@
 # fix for build issue
 CONFIG_FREERTOS_HZ=1000
+
+# Nombres largos en FATFS (datos_maestros.csv/inventario.csv superan 8.3)
+CONFIG_FATFS_LFN_HEAP=y
+
+# Modo USB Mass Storage (exponer la SD como disco USB)
+CONFIG_TINYUSB_MSC_ENABLED=y
