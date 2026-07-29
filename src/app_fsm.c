@@ -41,6 +41,11 @@ static bool s_screen_dimmed = false;
  * bien asentada en la bascula, no un peso real. */
 #define SCALE_MIN_TOTAL_WEIGHT_G 5.0f
 
+/* v2: mientras se retiran utiles nuevos, si la bascula vuelve a este umbral
+ * (caja retirada por completo) se toma como disparador para terminar el
+ * flujo automaticamente, sin necesidad de pulsar Confirmar. */
+#define SCALE_ZERO_THRESHOLD_G 0.5f
+
 static const char *MSG_REG_WEIGH_TOTAL = "Material nuevo: coloque la caja completa y espere...";
 
 typedef enum {
@@ -87,13 +92,32 @@ typedef struct {
 static app_state_t s_state = APP_STATE_IDLE;
 static process_ctx_t s_ctx;
 
+/* Recoge los ultimos articulos registrados (codigo->descripcion via
+ * datos_maestros) y refresca la pantalla de reposo con esa tabla. */
 static void go_idle(void)
 {
     s_state = APP_STATE_IDLE;
     scale_cancel_weighing();
     memset(&s_ctx, 0, sizeof(s_ctx));
-    ui_show_idle();
+
+    csv_inventory_recent_t recent[CSV_INVENTORY_RECENT_MAX];
+    size_t recent_count = csv_inventory_get_recent(recent, CSV_INVENTORY_RECENT_MAX);
+
+    ui_recent_item_t ui_items[UI_RECENT_MAX];
+    for (size_t i = 0; i < recent_count; i++) {
+        const master_item_t *item = csv_master_find_by_codigo(recent[i].codigo);
+        if (item) {
+            strlcpy(ui_items[i].descripcion, item->descripcion, sizeof(ui_items[i].descripcion));
+        } else {
+            strlcpy(ui_items[i].descripcion, recent[i].codigo, sizeof(ui_items[i].descripcion));
+        }
+        ui_items[i].unidades_nuevas = recent[i].unidades_nuevas;
+        ui_items[i].unidades_usadas = recent[i].unidades_usadas;
+    }
+    ui_show_idle(ui_items, recent_count);
 }
+
+static void finish_used_weighing(float weight_g);
 
 /* Arma la pesada aplicando el filtro de peso minimo solo cuando el estado
  * de destino es una pesada de "caja completa" (normal o de alta de
@@ -105,6 +129,20 @@ static void start_weighing_for_state(app_state_t target_state)
                        ? SCALE_MIN_TOTAL_WEIGHT_G
                        : 0.0f;
     scale_request_weighing(min_g);
+}
+
+/* Igual que start_weighing_for_state(), pero sin reiniciar la ventana de
+ * estabilidad ya acumulada: para los re-armados propios de la vigilancia
+ * en segundo plano (WAIT_WEIGHT_USED, REG_WAIT_TARE), donde un reinicio en
+ * cada ciclo haria parpadear el indicador de estable aunque el peso real
+ * no cambie. */
+static void continue_weighing_for_state(app_state_t target_state)
+{
+    float min_g = (target_state == APP_STATE_WAIT_WEIGHT_TOTAL ||
+                    target_state == APP_STATE_REG_WAIT_WEIGHT_TOTAL)
+                       ? SCALE_MIN_TOTAL_WEIGHT_G
+                       : 0.0f;
+    scale_continue_weighing(min_g);
 }
 
 /* Marca actividad "no tactil" (tag leido, peso detectado) para que la
@@ -233,14 +271,31 @@ static void handle_scale_stable(float weight_g)
         break;
 
     case APP_STATE_WAIT_WEIGHT_USED:
+        /* v2 "sin botones": si la bascula se queda a 0 (caja retirada por
+         * completo), se usa el ultimo peso estable ya visto como resultado
+         * final, igual que si se hubiera pulsado Confirmar justo antes de
+         * levantar la caja. Si aun no hay ninguna lectura previa (caja
+         * levantada nada mas empezar, antes de estabilizar), se ignora y
+         * se sigue esperando. Confirmar sigue disponible como respaldo
+         * manual en todo momento. */
+        if (fabsf(weight_g) <= SCALE_ZERO_THRESHOLD_G) {
+            if (s_ctx.tiene_lectura_usados) {
+                finish_used_weighing(s_ctx.pending_weight_g);
+            } else {
+                continue_weighing_for_state(APP_STATE_WAIT_WEIGHT_USED);
+            }
+            break;
+        }
+
         /* Vigilancia en segundo plano: se actualiza el valor mostrado pero
-         * no se avanza de estado hasta que el operario pulse Confirmar
-         * (puede retirar los utiles nuevos en varias tandas, o no haber
-         * ninguno que retirar). Se vuelve a armar para seguir mirando. */
+         * no se avanza de estado hasta que el operario pulse Confirmar (o
+         * la bascula llegue a 0), pudiendo retirar los utiles nuevos en
+         * varias tandas. Se vuelve a armar para seguir mirando (sin
+         * reiniciar la ventana, para que el indicador de estable no
+         * parpadee si el peso no ha cambiado). */
         s_ctx.pending_weight_g = weight_g;
         s_ctx.tiene_lectura_usados = true;
-        ui_update_wait_weight_reading(weight_g);
-        start_weighing_for_state(APP_STATE_WAIT_WEIGHT_USED);
+        continue_weighing_for_state(APP_STATE_WAIT_WEIGHT_USED);
         break;
 
     case APP_STATE_REG_WAIT_WEIGHT_TOTAL:
@@ -258,13 +313,35 @@ static void handle_scale_stable(float weight_g)
         s_ctx.pending_weight_g = weight_g;
         s_ctx.tiene_lectura_tara = true;
         ui_update_wait_tare_reading(weight_g);
-        start_weighing_for_state(APP_STATE_REG_WAIT_TARE);
+        continue_weighing_for_state(APP_STATE_REG_WAIT_TARE);
         break;
 
     default:
         ESP_LOGD(TAG, "Evento de peso estable ignorado en estado %d", (int)s_state);
         break;
     }
+}
+
+/* Lectura "en vivo" (cada muestra, estable o no) mientras se retiran
+ * utiles nuevos: solo actualiza el feedback en pantalla (LED y
+ * nuevas/usadas en grande); no cambia de estado ni guarda nada. Nuevas y
+ * usadas siempre suman el total, para que se vea de un vistazo que el
+ * inventario cuadra. */
+static void handle_scale_reading(float weight_g, bool stable)
+{
+    if (s_state != APP_STATE_WAIT_WEIGHT_USED) {
+        return;
+    }
+
+    int unidades_nuevas = s_ctx.unidades_totales - units_from_weight(weight_g);
+    if (unidades_nuevas < 0) {
+        unidades_nuevas = 0;
+    } else if (unidades_nuevas > s_ctx.unidades_totales) {
+        unidades_nuevas = s_ctx.unidades_totales;
+    }
+    int unidades_usadas = s_ctx.unidades_totales - unidades_nuevas;
+
+    ui_update_wait_weight_live(unidades_nuevas, unidades_usadas, stable);
 }
 
 static void handle_scale_timeout(void)
@@ -274,7 +351,7 @@ static void handle_scale_timeout(void)
          * en varias tandas: se sigue vigilando en segundo plano sin
          * mostrar error. */
         ESP_LOGD(TAG, "Timeout de bascula en estado %d, se sigue vigilando", (int)s_state);
-        start_weighing_for_state(s_state);
+        continue_weighing_for_state(s_state);
         return;
     }
 
@@ -580,6 +657,9 @@ static void app_task(void *arg)
         case APP_EVT_SCALE_STABLE:
             handle_scale_stable(evt.data.scale_stable.weight_g);
             break;
+        case APP_EVT_SCALE_READING:
+            handle_scale_reading(evt.data.scale_reading.weight_g, evt.data.scale_reading.stable);
+            break;
         case APP_EVT_SCALE_TIMEOUT:
             handle_scale_timeout();
             break;
@@ -604,7 +684,6 @@ static void app_task(void *arg)
 
 void app_fsm_start(void)
 {
-    s_state = APP_STATE_IDLE;
-    memset(&s_ctx, 0, sizeof(s_ctx));
+    go_idle(); /* refresca la pantalla de reposo con el historial ya cargado de la SD */
     xTaskCreate(app_task, "app_fsm", 4096, NULL, 5, NULL);
 }

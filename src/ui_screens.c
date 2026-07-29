@@ -24,6 +24,19 @@ static lv_obj_t *s_btn_usb_mode;
 static lv_obj_t *s_label_keypad_display;
 static lv_obj_t *s_btnmatrix_keypad;
 
+static lv_obj_t *s_table_recent;
+
+/* Pantalla ui_show_wait_weight_used(): LED estable/inestable arriba a la
+ * izquierda, instruccion corta bajo el titulo, y abajo 4 columnas
+ * (cabecera pequena + numero grande) con el resumen de la pesada. */
+static lv_obj_t *s_led_stable;
+static lv_obj_t *s_label_retire_nuevos;
+static lv_obj_t *s_cont_stats;
+static lv_obj_t *s_stat_value_peso_total;
+static lv_obj_t *s_stat_value_uds_totales;
+static lv_obj_t *s_stat_value_nuevas;
+static lv_obj_t *s_stat_value_usadas;
+
 static bool s_keypad_active = false;
 static bool s_keypad_allow_decimal = false;
 static int s_keypad_max_len = 8;
@@ -180,6 +193,31 @@ static void set_widget_visible(lv_obj_t *obj, bool visible)
     }
 }
 
+/* Una columna del resumen de ui_show_wait_weight_used(): cabecera pequena
+ * arriba, numero grande debajo. Devuelve el label del numero, que es el
+ * unico que se actualiza despues. */
+static lv_obj_t *create_stat_column(lv_obj_t *parent, const char *header_text)
+{
+    lv_obj_t *col = lv_obj_create(parent);
+    lv_obj_set_size(col, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(col, 0, 0);
+    lv_obj_set_style_pad_all(col, 2, 0);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *header = lv_label_create(col);
+    lv_obj_set_style_text_font(header, &lv_font_montserrat_14, 0);
+    lv_label_set_text(header, header_text);
+
+    lv_obj_t *value = lv_label_create(col);
+    lv_obj_set_style_text_font(value, &lv_font_montserrat_28, 0);
+    lv_label_set_text(value, "--");
+
+    return value;
+}
+
 /* lv_obj_align_to() solo calcula la posicion en el momento en que se llama;
  * no vuelve a recalcularse sola si el titulo cambia despues de tamano
  * (p.ej. pasa de 1 a 2 lineas). Por eso el body se posiciona relativo al
@@ -205,6 +243,10 @@ static void hide_interactive_widgets(void)
     set_widget_visible(s_btn_usb_mode, false);
     set_widget_visible(s_btnmatrix_keypad, false);
     set_widget_visible(s_label_keypad_display, false);
+    set_widget_visible(s_table_recent, false);
+    set_widget_visible(s_led_stable, false);
+    set_widget_visible(s_label_retire_nuevos, false);
+    set_widget_visible(s_cont_stats, false);
     set_widget_visible(s_label_detail, true);
 
     lv_label_set_text(s_label_btn_confirm, "Confirmar");
@@ -255,6 +297,42 @@ void ui_screens_init(lv_disp_t *disp)
     lv_obj_align(s_btnmatrix_keypad, LV_ALIGN_TOP_MID, 0, 110);
     lv_obj_add_event_cb(s_btnmatrix_keypad, keypad_btnmatrix_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
+    /* Tabla de los ultimos articulos registrados, solo visible en reposo. */
+    s_table_recent = lv_table_create(scr);
+    lv_table_set_col_cnt(s_table_recent, 3);
+    lv_table_set_col_width(s_table_recent, 0, 260);
+    lv_table_set_col_width(s_table_recent, 1, 90);
+    lv_table_set_col_width(s_table_recent, 2, 90);
+    lv_obj_set_size(s_table_recent, 440, 190);
+    lv_obj_align(s_table_recent, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_style_text_font(s_table_recent, &lv_font_montserrat_14, 0);
+
+    /* Pantalla ui_show_wait_weight_used(): LED arriba a la izquierda,
+     * instruccion corta bajo el titulo (reposicionada cada vez que se
+     * muestra la pantalla), y resumen de la pesada en 4 columnas abajo. */
+    s_led_stable = lv_led_create(scr);
+    lv_obj_set_size(s_led_stable, 26, 26);
+    lv_obj_align(s_led_stable, LV_ALIGN_TOP_LEFT, 10, 10);
+
+    s_label_retire_nuevos = lv_label_create(scr);
+    lv_obj_set_style_text_font(s_label_retire_nuevos, &lv_font_montserrat_24, 0);
+    lv_label_set_text(s_label_retire_nuevos, "RETIRE NUEVOS");
+
+    s_cont_stats = lv_obj_create(scr);
+    lv_obj_set_size(s_cont_stats, 460, 140);
+    lv_obj_align(s_cont_stats, LV_ALIGN_BOTTOM_MID, 0, -60);
+    lv_obj_set_style_bg_opa(s_cont_stats, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_cont_stats, 0, 0);
+    lv_obj_set_style_pad_all(s_cont_stats, 0, 0);
+    lv_obj_clear_flag(s_cont_stats, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(s_cont_stats, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_cont_stats, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    s_stat_value_peso_total = create_stat_column(s_cont_stats, "Peso total");
+    s_stat_value_uds_totales = create_stat_column(s_cont_stats, "Uds totales");
+    s_stat_value_nuevas = create_stat_column(s_cont_stats, "Nuevas");
+    s_stat_value_usadas = create_stat_column(s_cont_stats, "Usadas");
+
     s_btn_confirm = lv_btn_create(scr);
     lv_obj_add_event_cb(s_btn_confirm, confirm_btn_event_cb, LV_EVENT_CLICKED, NULL);
     s_label_btn_confirm = lv_label_create(s_btn_confirm);
@@ -300,17 +378,39 @@ void ui_screens_init(lv_disp_t *disp)
 
     bsp_display_unlock();
 
-    ui_show_idle();
+    ui_show_idle(NULL, 0);
 }
 
-void ui_show_idle(void)
+void ui_show_idle(const ui_recent_item_t *items, size_t count)
 {
+    if (count > UI_RECENT_MAX) {
+        count = UI_RECENT_MAX;
+    }
+
     bsp_display_lock(0);
     hide_interactive_widgets();
     set_title("Esperando articulo");
     lv_label_set_text(s_label_detail, "Acerque el tag NFC de la caja al lector");
     set_widget_visible(s_btn_restart, true);
     set_widget_visible(s_btn_usb_mode, true);
+
+    lv_table_set_row_cnt(s_table_recent, (uint16_t)(count + 1));
+    lv_table_set_cell_value(s_table_recent, 0, 0, "Descripcion");
+    lv_table_set_cell_value(s_table_recent, 0, 1, "Nuevas");
+    lv_table_set_cell_value(s_table_recent, 0, 2, "Usadas");
+    for (size_t i = 0; i < count; i++) {
+        char titulo[UI_RECENT_DESC_MAX_LEN];
+        sanitize_for_display(items[i].descripcion, titulo, sizeof(titulo));
+        char nuevas_str[8];
+        char usadas_str[8];
+        snprintf(nuevas_str, sizeof(nuevas_str), "%d", items[i].unidades_nuevas);
+        snprintf(usadas_str, sizeof(usadas_str), "%d", items[i].unidades_usadas);
+        lv_table_set_cell_value(s_table_recent, (uint16_t)(i + 1), 0, titulo);
+        lv_table_set_cell_value(s_table_recent, (uint16_t)(i + 1), 1, nuevas_str);
+        lv_table_set_cell_value(s_table_recent, (uint16_t)(i + 1), 2, usadas_str);
+    }
+    set_widget_visible(s_table_recent, true);
+
     bsp_display_unlock();
 }
 
@@ -367,21 +467,18 @@ void ui_show_description_and_wait_weight(const char *descripcion)
     bsp_display_unlock();
 }
 
-static int s_wait_used_unidades_totales = 0;
-static float s_wait_used_peso_total_g = 0.0f;
-
-/* 3 botones cuadrados en una sola fila, ocupando todo el ancho, para dejar
- * el maximo de alto posible al texto (que en esta pantalla puede llegar a
- * 5 lineas: peso total/unidades, instrucciones, y ultima lectura). */
+/* 3 botones cuadrados en una sola fila, ocupando todo el ancho y con la
+ * mitad de alto de lo habitual, para dejar el maximo de alto posible al
+ * resumen de la pesada. */
 static void layout_bottom_row_3_buttons(void)
 {
-    lv_obj_set_size(s_btn_confirm, 146, 100);
+    lv_obj_set_size(s_btn_confirm, 146, 50);
     lv_obj_align(s_btn_confirm, LV_ALIGN_BOTTOM_LEFT, 10, -10);
 
-    lv_obj_set_size(s_btn_retry, 146, 100);
+    lv_obj_set_size(s_btn_retry, 146, 50);
     lv_obj_align(s_btn_retry, LV_ALIGN_BOTTOM_MID, 0, -10);
 
-    lv_obj_set_size(s_btn_cancel, 146, 100);
+    lv_obj_set_size(s_btn_cancel, 146, 50);
     lv_obj_align(s_btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
 }
 
@@ -390,20 +487,29 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
     char titulo[80];
     sanitize_for_display(descripcion, titulo, sizeof(titulo));
 
-    s_wait_used_unidades_totales = unidades_totales;
-    s_wait_used_peso_total_g = peso_total_g;
-
-    char buf[400];
-    snprintf(buf, sizeof(buf),
-             "Peso total: %.1f g   Unidades totales: %d\n"
-             "Retire los utiles NUEVOS (puede hacerlo en varias tandas).\n"
-             "Pulse Confirmar cuando este listo.\n\n"
-             "Esperando primera lectura...", peso_total_g, unidades_totales);
+    char peso_total_buf[16];
+    snprintf(peso_total_buf, sizeof(peso_total_buf), "%.1f g", peso_total_g);
+    char uds_totales_buf[12];
+    snprintf(uds_totales_buf, sizeof(uds_totales_buf), "%d", unidades_totales);
 
     bsp_display_lock(0);
     hide_interactive_widgets();
     set_title(titulo);
-    lv_label_set_text(s_label_detail, buf);
+    set_widget_visible(s_label_detail, false);
+
+    lv_label_set_text(s_label_retire_nuevos, "RETIRE NUEVOS");
+    lv_obj_align_to(s_label_retire_nuevos, s_label_title, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+    set_widget_visible(s_label_retire_nuevos, true);
+
+    lv_led_set_color(s_led_stable, lv_palette_main(LV_PALETTE_GREY));
+    lv_led_on(s_led_stable);
+    set_widget_visible(s_led_stable, true);
+
+    lv_label_set_text(s_stat_value_peso_total, peso_total_buf);
+    lv_label_set_text(s_stat_value_uds_totales, uds_totales_buf);
+    lv_label_set_text(s_stat_value_nuevas, "0");
+    lv_label_set_text(s_stat_value_usadas, uds_totales_buf);
+    set_widget_visible(s_cont_stats, true);
 
     layout_bottom_row_3_buttons();
     lv_label_set_text(s_label_btn_retry, "Repetir pesada total");
@@ -414,18 +520,17 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
     bsp_display_unlock();
 }
 
-void ui_update_wait_weight_reading(float weight_g)
+void ui_update_wait_weight_live(int unidades_nuevas, int unidades_usadas, bool stable)
 {
-    char buf[400];
-    snprintf(buf, sizeof(buf),
-             "Peso total: %.1f g   Unidades totales: %d\n"
-             "Retire los utiles NUEVOS (puede hacerlo en varias tandas).\n"
-             "Pulse Confirmar cuando este listo.\n\n"
-             "Ultimo peso leido: %.1f g",
-             s_wait_used_peso_total_g, s_wait_used_unidades_totales, weight_g);
+    char nuevas_buf[12];
+    snprintf(nuevas_buf, sizeof(nuevas_buf), "%d", unidades_nuevas);
+    char usadas_buf[12];
+    snprintf(usadas_buf, sizeof(usadas_buf), "%d", unidades_usadas);
 
     bsp_display_lock(0);
-    lv_label_set_text(s_label_detail, buf);
+    lv_label_set_text(s_stat_value_nuevas, nuevas_buf);
+    lv_label_set_text(s_stat_value_usadas, usadas_buf);
+    lv_led_set_color(s_led_stable, stable ? lv_palette_main(LV_PALETTE_GREEN) : lv_palette_main(LV_PALETTE_RED));
     bsp_display_unlock();
 }
 

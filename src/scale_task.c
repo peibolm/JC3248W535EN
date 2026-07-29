@@ -23,6 +23,7 @@ static const char *TAG = "scale_task";
 
 static volatile bool s_weighing_active = false;
 static volatile float s_min_weight_g = 0.0f;
+static volatile bool s_reset_window = false;
 
 void scale_request_weighing(float min_weight_g)
 {
@@ -30,6 +31,18 @@ void scale_request_weighing(float min_weight_g)
      * el operario teclea en el numpad); sin este flush, las primeras
      * muestras de esta pesada podrian ser tramas viejas ya acumuladas. */
     scale_uart_flush();
+    s_min_weight_g = min_weight_g;
+    s_reset_window = true;
+    s_weighing_active = true;
+}
+
+void scale_continue_weighing(float min_weight_g)
+{
+    /* Sin flush ni reinicio de ventana: sigue deslizando las muestras ya
+     * acumuladas. Si cada re-armado de la vigilancia en segundo plano
+     * reiniciase la ventana desde cero, el indicador de estable pasaria
+     * brevemente por "inestable" en cada ciclo aunque el peso real no
+     * haya cambiado nada (parpadeo rojo/verde). */
     s_min_weight_g = min_weight_g;
     s_weighing_active = true;
 }
@@ -47,9 +60,13 @@ static void scale_poll_task(void *arg)
 
     while (1) {
         if (!s_weighing_active) {
-            window_count = 0;
             vTaskDelay(pdMS_TO_TICKS(SCALE_SAMPLE_PERIOD_MS));
             continue;
+        }
+
+        if (s_reset_window) {
+            s_reset_window = false;
+            window_count = 0;
         }
 
         if (window_count == 0) {
@@ -69,6 +86,8 @@ static void scale_poll_task(void *arg)
                 window[SCALE_STABLE_WINDOW_SAMPLES - 1] = weight_g;
             }
 
+            bool is_stable = false;
+            float avg = weight_g;
             if (window_count == SCALE_STABLE_WINDOW_SAMPLES) {
                 float min_w = window[0], max_w = window[0], sum = 0.0f;
                 for (size_t i = 0; i < SCALE_STABLE_WINDOW_SAMPLES; i++) {
@@ -76,26 +95,41 @@ static void scale_poll_task(void *arg)
                     if (window[i] > max_w) max_w = window[i];
                     sum += window[i];
                 }
+                is_stable = (max_w - min_w) <= SCALE_WEIGHT_TOLERANCE_G;
+                avg = sum / SCALE_STABLE_WINDOW_SAMPLES;
+            }
 
-                if ((max_w - min_w) <= SCALE_WEIGHT_TOLERANCE_G) {
-                    float avg = sum / SCALE_STABLE_WINDOW_SAMPLES;
-                    ESP_LOGI(TAG, "Peso estable: %.1f g", avg);
+            /* Lectura "en vivo" para dar feedback continuo en pantalla
+             * (peso actual + si esta estable o aun asentandose), tanto si
+             * la ventana ya esta completa/estable como si no. */
+            app_event_t reading_evt = {.type = APP_EVT_SCALE_READING};
+            reading_evt.data.scale_reading.weight_g = weight_g;
+            reading_evt.data.scale_reading.stable = is_stable;
+            app_events_post(&reading_evt);
 
-                    /* Importante: dejar nuestro propio estado en "terminado"
-                     * ANTES de publicar el evento. app_events_post() puede
-                     * ceder la CPU de inmediato a app_fsm (mayor prioridad),
-                     * que puede re-armar esta misma pesada (p.ej. vigilancia
-                     * en WAIT_WEIGHT_USED) antes de que esta tarea retome la
-                     * ejecucion; si el reseteo fuera despues del post,
-                     * pisariamos ese nuevo "activo" con un "false" viejo. */
-                    s_weighing_active = false;
-                    window_count = 0;
+            if (is_stable) {
+                ESP_LOGI(TAG, "Peso estable: %.1f g", avg);
 
-                    app_event_t evt = {.type = APP_EVT_SCALE_STABLE};
-                    evt.data.scale_stable.weight_g = avg;
-                    app_events_post(&evt);
-                    continue;
-                }
+                /* Se refresca el reloj del timeout aqui (no solo cuando la
+                 * ventana arranca de cero) porque en modo "continue" la
+                 * ventana ya no se reinicia entre re-armados: sin esto, el
+                 * timeout de 15s se mediria desde un arranque muy antiguo
+                 * durante una vigilancia larga. */
+                weighing_start = xTaskGetTickCount();
+
+                /* Importante: dejar nuestro propio estado en "terminado"
+                 * ANTES de publicar el evento. app_events_post() puede
+                 * ceder la CPU de inmediato a app_fsm (mayor prioridad),
+                 * que puede re-armar esta misma pesada (p.ej. vigilancia
+                 * en WAIT_WEIGHT_USED) antes de que esta tarea retome la
+                 * ejecucion; si el reseteo fuera despues del post,
+                 * pisariamos ese nuevo "activo" con un "false" viejo. */
+                s_weighing_active = false;
+
+                app_event_t evt = {.type = APP_EVT_SCALE_STABLE};
+                evt.data.scale_stable.weight_g = avg;
+                app_events_post(&evt);
+                continue;
             }
         }
 
@@ -103,7 +137,6 @@ static void scale_poll_task(void *arg)
             (xTaskGetTickCount() - weighing_start) > pdMS_TO_TICKS(SCALE_STABILIZE_TIMEOUT_MS)) {
             ESP_LOGW(TAG, "Timeout esperando peso estable");
             s_weighing_active = false;
-            window_count = 0;
 
             app_event_t evt = {.type = APP_EVT_SCALE_TIMEOUT};
             app_events_post(&evt);

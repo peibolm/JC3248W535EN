@@ -26,6 +26,17 @@ esp_err_t scale_task_start(void);
  *  colocado la caja en la bascula. Pasar 0.0f para no filtrar nada. */
 void scale_request_weighing(float min_weight_g);
 
+/**
+ * @brief Igual que scale_request_weighing(), pero sin vaciar el buffer de
+ * UART ni reiniciar la ventana de muestras ya acumulada: la usa la propia
+ * vigilancia en segundo plano (WAIT_WEIGHT_USED, REG_WAIT_TARE) para
+ * volver a armarse tras cada lectura sin perder la ventana ya estable (si
+ * no, el indicador de estable parpadearia en cada re-armado aunque el peso
+ * real no cambie). Usar scale_request_weighing() en vez de esta para
+ * arrancar una pesada realmente nueva.
+ */
+void scale_continue_weighing(float min_weight_g);
+
 /** Aborta una pesada en curso sin emitir ningún evento. */
 void scale_cancel_weighing(void);
 

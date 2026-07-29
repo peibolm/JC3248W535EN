@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include "lvgl.h"
 
 #ifdef __cplusplus
@@ -15,8 +16,24 @@ extern "C" {
 /** Crea los widgets reutilizables sobre la pantalla activa de disp. */
 void ui_screens_init(lv_disp_t *disp);
 
-/** Pantalla de espera: "Acerque un articulo al lector". */
-void ui_show_idle(void);
+#define UI_RECENT_DESC_MAX_LEN 64
+#define UI_RECENT_MAX 5
+
+typedef struct {
+    char descripcion[UI_RECENT_DESC_MAX_LEN];
+    int unidades_nuevas;
+    int unidades_usadas;
+} ui_recent_item_t;
+
+/**
+ * @brief Pantalla de espera: "Acerque un articulo al lector", con una
+ * tabla de los ultimos articulos registrados (el mas nuevo arriba).
+ *
+ * @param items Array de hasta UI_RECENT_MAX entradas, la mas reciente en
+ * el indice 0. Puede ser NULL si count es 0.
+ * @param count Numero de entradas validas en items (0..UI_RECENT_MAX).
+ */
+void ui_show_idle(const ui_recent_item_t *items, size_t count);
 
 /** Pantalla de error genérica (código no encontrado, duplicado...) con
  *  botón para volver a esperar tag. */
@@ -33,22 +50,24 @@ void ui_show_duplicate_warning(const char *descripcion);
 void ui_show_description_and_wait_weight(const char *descripcion);
 
 /**
- * @brief Muestra el peso total y las unidades detectadas, y pide retirar
- * los útiles nuevos (puede hacerse en varias tandas) confirmando con el
- * botón táctil. Deja el botón Confirmar disponible desde el primer momento;
- * no hace falta esperar a que el peso se estabilice para poder pulsarlo.
- * Incluye también "Repetir pesada total" por si la pesada de la caja
- * completa no fue correcta.
+ * @brief Pide retirar los útiles nuevos. LED de estable/inestable en la
+ * esquina superior izquierda; abajo, tabla con peso total/unidades
+ * totales (fijos) y nuevas/usadas (en vivo, números grandes) para que se
+ * vea de un vistazo que el inventario cuadra (nuevas+usadas=totales).
+ * El botón Confirmar está disponible desde el primer momento; no hace
+ * falta esperar a que el peso se estabilice para poder pulsarlo. Incluye
+ * también "Repetir pesada total" por si la pesada de la caja completa no
+ * fue correcta.
  */
 void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, float peso_total_g);
 
 /**
- * @brief Actualiza solo el texto de la última lectura de peso mostrada en
- * la pantalla de ui_show_wait_weight_used(), sin tocar los botones. Se
- * llama repetidamente en segundo plano mientras el operario decide cuándo
- * pulsar Confirmar.
+ * @brief Actualiza las unidades nuevas retiradas y usadas restantes (en
+ * vivo, en grande) y el indicador de estable/inestable (verde/rojo) de la
+ * pantalla de ui_show_wait_weight_used(). Se llama en cada muestra de la
+ * báscula, sea o no estable, para dar feedback continuo.
  */
-void ui_update_wait_weight_reading(float weight_g);
+void ui_update_wait_weight_live(int unidades_nuevas, int unidades_usadas, bool stable);
 
 /**
  * @brief Pide vaciar la caja (retirar todos los utiles) y confirmar con el

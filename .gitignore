@@ -6,3 +6,5 @@
 .vscode/launch.json
 /example/.pio
 /managed_components
+/enclosure/*.stl
+/enclosure/preview*.png

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
@@ -19,6 +20,7 @@ extern "C" {
 typedef enum {
     APP_EVT_NFC_TAG,
     APP_EVT_SCALE_STABLE,
+    APP_EVT_SCALE_READING, /* lectura "en vivo", una por cada muestra valida (estable o no) */
     APP_EVT_SCALE_TIMEOUT,
     APP_EVT_UI_CONFIRM_PRESSED,
     APP_EVT_UI_CANCEL_PRESSED,
@@ -36,6 +38,10 @@ typedef struct {
         struct {
             float weight_g;
         } scale_stable;
+        struct {
+            float weight_g;
+            bool stable; /* true si la ventana de muestras actual ya cumple la tolerancia */
+        } scale_reading;
         struct {
             char text[APP_EVENT_KEYPAD_TEXT_MAX_LEN]; /* lo tecleado (digitos y opcionalmente un '.') */
         } keypad;

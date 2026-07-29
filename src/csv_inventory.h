@@ -10,8 +10,10 @@
  */
 #pragma once
 
+#include <stddef.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "csv_master.h" /* MASTER_CODIGO_MAX_LEN */
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +45,23 @@ esp_err_t csv_inventory_append(const char *codigo, int unidades_nuevas, int unid
  * fila registrada la sustituye en vez de anadir una duplicada.
  */
 esp_err_t csv_inventory_append_or_update(const char *codigo, int unidades_nuevas, int unidades_usadas);
+
+#define CSV_INVENTORY_RECENT_MAX 5
+
+typedef struct {
+    char codigo[MASTER_CODIGO_MAX_LEN];
+    int unidades_nuevas;
+    int unidades_usadas;
+} csv_inventory_recent_t;
+
+/**
+ * @brief Copia hasta max_out de las entradas mas recientes (la mas nueva
+ * en el indice 0), incluyendo las cargadas de la SD al arrancar. Util para
+ * mostrar un resumen en la pantalla de reposo.
+ *
+ * @return numero de entradas copiadas (puede ser 0 si aun no hay ninguna).
+ */
+size_t csv_inventory_get_recent(csv_inventory_recent_t *out, size_t max_out);
 
 #ifdef __cplusplus
 }

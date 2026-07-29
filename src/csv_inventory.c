@@ -36,6 +36,26 @@ static codigo_str_t *s_codes = NULL;
 static size_t s_count = 0;
 static size_t s_capacity = 0;
 
+/* Ultimas entradas tocadas (la mas nueva siempre en el indice 0), para la
+ * tabla resumen de la pantalla de reposo. Se repuebla tambien al cargar el
+ * fichero existente, para que sobreviva a un reinicio. */
+static csv_inventory_recent_t s_recent[CSV_INVENTORY_RECENT_MAX];
+static size_t s_recent_count = 0;
+
+static void push_recent(const char *codigo, int unidades_nuevas, int unidades_usadas)
+{
+    size_t n = (s_recent_count < CSV_INVENTORY_RECENT_MAX) ? s_recent_count : CSV_INVENTORY_RECENT_MAX - 1;
+    for (size_t i = n; i > 0; i--) {
+        s_recent[i] = s_recent[i - 1];
+    }
+    strlcpy(s_recent[0].codigo, codigo, sizeof(s_recent[0].codigo));
+    s_recent[0].unidades_nuevas = unidades_nuevas;
+    s_recent[0].unidades_usadas = unidades_usadas;
+    if (s_recent_count < CSV_INVENTORY_RECENT_MAX) {
+        s_recent_count++;
+    }
+}
+
 static void trim_newline(char *s)
 {
     size_t len = strlen(s);
@@ -83,6 +103,36 @@ static esp_err_t create_with_header(const char *path)
     return ESP_OK;
 }
 
+/* Divide una linea en codigo;unidades_nuevas;unidades_usadas (el 4o campo,
+ * hora, es opcional y se ignora aqui). Devuelve false si faltan columnas. */
+static bool parse_row(char *line, char **codigo_out, int *nuevas_out, int *usadas_out)
+{
+    char *codigo = line;
+    char *sep1 = strchr(codigo, INVENTORY_FIELD_SEP);
+    if (!sep1) {
+        return false;
+    }
+    *sep1 = '\0';
+
+    char *nuevas_str = sep1 + 1;
+    char *sep2 = strchr(nuevas_str, INVENTORY_FIELD_SEP);
+    if (!sep2) {
+        return false;
+    }
+    *sep2 = '\0';
+
+    char *usadas_str = sep2 + 1;
+    char *sep3 = strchr(usadas_str, INVENTORY_FIELD_SEP); /* hora, opcional */
+    if (sep3) {
+        *sep3 = '\0';
+    }
+
+    *codigo_out = codigo;
+    *nuevas_out = atoi(nuevas_str);
+    *usadas_out = atoi(usadas_str);
+    return true;
+}
+
 static esp_err_t load_existing_codes(const char *path)
 {
     FILE *f = fopen(path, "r");
@@ -101,11 +151,12 @@ static esp_err_t load_existing_codes(const char *path)
         if (line[0] == '\0') {
             continue;
         }
-        char *sep = strchr(line, INVENTORY_FIELD_SEP);
-        if (sep) {
-            *sep = '\0';
+        char *codigo;
+        int nuevas, usadas;
+        if (parse_row(line, &codigo, &nuevas, &usadas)) {
+            remember_codigo(codigo);
+            push_recent(codigo, nuevas, usadas);
         }
-        remember_codigo(line);
     }
     fclose(f);
     return ESP_OK;
@@ -115,6 +166,7 @@ esp_err_t csv_inventory_init(const char *path)
 {
     strlcpy(s_path, path, sizeof(s_path));
     s_count = 0;
+    s_recent_count = 0;
 
     FILE *probe = fopen(path, "r");
     if (!probe) {
@@ -156,6 +208,7 @@ esp_err_t csv_inventory_append(const char *codigo, int unidades_nuevas, int unid
     fclose(f);
 
     remember_codigo(codigo);
+    push_recent(codigo, unidades_nuevas, unidades_usadas);
 
     ESP_LOGI(TAG, "Guardado en inventario: %s,%d,%d,%s", codigo, unidades_nuevas, unidades_usadas, hora);
     return ESP_OK;
@@ -226,6 +279,17 @@ esp_err_t csv_inventory_append_or_update(const char *codigo, int unidades_nuevas
     remove(s_path);
     rename(tmp_path, s_path);
 
+    push_recent(codigo, unidades_nuevas, unidades_usadas);
+
     ESP_LOGI(TAG, "Inventario actualizado (sobrescrito): %s,%d,%d,%s", codigo, unidades_nuevas, unidades_usadas, hora);
     return ESP_OK;
+}
+
+size_t csv_inventory_get_recent(csv_inventory_recent_t *out, size_t max_out)
+{
+    size_t n = (s_recent_count < max_out) ? s_recent_count : max_out;
+    for (size_t i = 0; i < n; i++) {
+        out[i] = s_recent[i];
+    }
+    return n;
 }
