@@ -66,8 +66,6 @@ typedef enum {
     APP_STATE_REG_WAIT_TARE,         /* pesando la caja vacia */
     APP_STATE_REG_ENTER_CALIBRE,     /* teclado decimal: calibre */
     APP_STATE_REG_ENTER_CABEZA,      /* teclado decimal: cabeza */
-
-    APP_STATE_USB_MODE, /* SD expuesta por USB; solo se sale reiniciando */
 } app_state_t;
 
 typedef struct {
@@ -596,25 +594,17 @@ static void handle_retry_pressed(void)
     }
 }
 
-/* Activa el modo USB Mass Storage bajo demanda (solo desde reposo). No hay
- * vuelta atras por software: la unica salida es reiniciar el dispositivo. */
+/* Activa el modo USB Mass Storage bajo demanda (solo desde reposo).
+ * Reinicia el dispositivo para arrancar DIRECTO en modo USB, sin levantar
+ * NFC/bascula/FSM - ver el comentario de usb_msc_request_boot_and_restart()
+ * para el porque. Esta funcion no vuelve. */
 static void handle_usb_mode_pressed(void)
 {
     if (s_state != APP_STATE_IDLE) {
         return;
     }
 
-    scale_cancel_weighing();
-
-    if (usb_msc_start() != ESP_OK) {
-        ESP_LOGE(TAG, "No se pudo activar el modo USB");
-        s_state = APP_STATE_ERROR_DISMISSABLE;
-        ui_show_error("Fallo al activar el modo USB. Reinicie e intentelo de nuevo.");
-        return;
-    }
-
-    s_state = APP_STATE_USB_MODE;
-    ui_show_usb_mode();
+    usb_msc_request_boot_and_restart();
 }
 
 static void handle_cancel_pressed(void)

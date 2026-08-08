@@ -19,6 +19,7 @@
 #include "app_fsm.h"
 #include "nfc_task.h"
 #include "scale_task.h"
+#include "usb_msc.h"
 
 #define DATOS_MAESTROS_PATH "/sdcard/datos_maestros.csv"
 #define INVENTARIO_PATH     "/sdcard/inventario.csv"
@@ -105,6 +106,20 @@ void setup()
 
   logSection("Create UI");
   ui_screens_init(disp);
+
+  /* Si el ultimo reinicio vino del boton "Modo USB", entra DIRECTO en modo
+   * USB y ya esta: nada de montar la SD para la app, ni NFC, ni bascula,
+   * ni FSM. Cuanto menos compita por CPU/bus durante el enganche USB con
+   * el PC, mas fiable (ver usb_msc_request_boot_and_restart()). */
+  if (usb_msc_should_boot_into_usb_mode()) {
+    logSection("Boot directo a modo USB");
+    if (usb_msc_start() != ESP_OK) {
+      ui_show_fatal_error("Fallo al activar el modo USB. Reinicie e intentelo de nuevo.");
+    } else {
+      ui_show_usb_mode();
+    }
+    return;
+  }
 
   logSection("Mount microSD and load CSV data");
   if (storage_sd_mount() != ESP_OK) {

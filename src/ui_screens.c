@@ -610,24 +610,39 @@ void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len)
 
     /* Layout propio de esta pantalla (480x320 apaisado): titulo y campo de
      * texto en una columna izquierda de ancho fijo (para no invadir la
-     * columna de botones de la derecha ni depender de cuantas lineas ocupe
-     * el titulo), teclado grande debajo, Confirmar/Cancelar apilados a la
-     * derecha en vez de robarle altura al teclado. */
+     * columna de botones de la derecha), teclado grande debajo,
+     * Confirmar/Cancelar apilados a la derecha en vez de robarle altura al
+     * teclado.
+     *
+     * El valor tecleado y el teclado se anclan cada uno al borde inferior
+     * REAL del elemento anterior (lv_obj_align_to), no a una coordenada
+     * fija: dos de los titulos que usa esta pantalla ("Ultimos digitos del
+     * codigo (13 + estos digitos)", "Unidades totales (numero mayor que
+     * 0)") ocupan 2 lineas a 340px de ancho. Con coordenadas fijas el
+     * margen entre titulo y valor dependeria de la metrica exacta de la
+     * fuente - con anclaje es imposible que se solapen, sea cual sea el
+     * texto. El alto del teclado se calcula igual, hasta 8px del borde
+     * inferior real de pantalla (mismo margen que usa el resto de la app
+     * para botones pegados al borde, ver p.ej. ui_show_confirm_weight()). */
     lv_obj_set_width(s_label_title, 340);
-    lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_20, 0);
-    lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 10, 8);
+    lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_18, 0);
+    lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 10, 6);
     set_title(titulo);
 
     set_widget_visible(s_label_detail, false);
 
     lv_label_set_text(s_label_keypad_display, "0");
     lv_obj_set_width(s_label_keypad_display, 340);
-    lv_obj_align(s_label_keypad_display, LV_ALIGN_TOP_LEFT, 10, 62);
+    lv_obj_align_to(s_label_keypad_display, s_label_title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
     set_widget_visible(s_label_keypad_display, true);
 
-    lv_obj_set_size(s_btnmatrix_keypad, 340, 200);
-    lv_obj_align(s_btnmatrix_keypad, LV_ALIGN_TOP_LEFT, 10, 108);
+    lv_obj_set_width(s_btnmatrix_keypad, 340);
+    lv_obj_align_to(s_btnmatrix_keypad, s_label_keypad_display, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
     set_widget_visible(s_btnmatrix_keypad, true);
+
+    lv_coord_t keypad_y = lv_obj_get_y(s_btnmatrix_keypad);
+    lv_coord_t screen_h = lv_obj_get_height(lv_scr_act());
+    lv_obj_set_height(s_btnmatrix_keypad, screen_h - keypad_y - 8);
 
     lv_obj_set_size(s_btn_confirm, 100, 80);
     lv_obj_align(s_btn_confirm, LV_ALIGN_TOP_RIGHT, -10, 60);

@@ -1,13 +1,19 @@
 #include "usb_msc.h"
 
 #include "esp_log.h"
+#include "esp_system.h"
 #include "sdmmc_cmd.h"
 #include "tinyusb.h"
 #include "tusb_msc_storage.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 #include "storage_sd.h"
 
 static const char *TAG = "usb_msc";
+
+#define NVS_NAMESPACE "usb_msc"
+#define NVS_KEY_BOOT  "boot_usb"
 
 esp_err_t usb_msc_start(void)
 {
@@ -46,4 +52,62 @@ esp_err_t usb_msc_start(void)
 
     ESP_LOGI(TAG, "Modo USB Mass Storage activo");
     return ESP_OK;
+}
+
+/* NVS puede fallar la primera vez con ESP_ERR_NVS_NO_FREE_PAGES o
+ * ESP_ERR_NVS_NEW_VERSION_FOUND (particion nueva/de otra version de IDF);
+ * el propio ejemplo de ESP-IDF resuelve esto borrando e inicializando de
+ * nuevo, es un caso esperado y no un fallo real. */
+static esp_err_t nvs_init_once(void)
+{
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    return ret;
+}
+
+void usb_msc_request_boot_and_restart(void)
+{
+    if (nvs_init_once() == ESP_OK) {
+        nvs_handle_t handle;
+        if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+            nvs_set_u8(handle, NVS_KEY_BOOT, 1);
+            nvs_commit(handle);
+            nvs_close(handle);
+        } else {
+            ESP_LOGE(TAG, "No se pudo abrir NVS para marcar el arranque en modo USB");
+        }
+    } else {
+        ESP_LOGE(TAG, "No se pudo inicializar NVS; reiniciando igualmente (puede que no entre en modo USB)");
+    }
+
+    ESP_LOGI(TAG, "Reiniciando directo a modo USB...");
+    esp_restart();
+}
+
+bool usb_msc_should_boot_into_usb_mode(void)
+{
+    if (nvs_init_once() != ESP_OK) {
+        return false;
+    }
+
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    uint8_t flag = 0;
+    esp_err_t ret = nvs_get_u8(handle, NVS_KEY_BOOT, &flag);
+    if (ret == ESP_OK && flag) {
+        /* Se limpia YA, antes de devolver el control: si algo falla luego
+         * al entrar en modo USB, el siguiente reinicio es uno normal y no
+         * un bucle. */
+        nvs_erase_key(handle, NVS_KEY_BOOT);
+        nvs_commit(handle);
+    }
+    nvs_close(handle);
+
+    return (ret == ESP_OK) && flag;
 }
