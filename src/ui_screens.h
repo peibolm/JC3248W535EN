@@ -46,6 +46,14 @@ void ui_show_error(const char *msg);
  */
 void ui_show_duplicate_warning(const char *descripcion);
 
+/**
+ * @brief Al dar de alta un tag nuevo, el código tecleado ya tiene OTRO tag
+ * vinculado en datos_maestros.csv (posible tag físico perdido/sustituido,
+ * o error de tecleo). "Sobrescribir" re-vincula el tag que se está
+ * registrando a ese código; "Cancelar" vuelve a reposo sin tocar nada.
+ */
+void ui_show_tag_relink_warning(const char *codigo, const char *descripcion);
+
 /** Muestra la descripción del artículo y pide colocarlo en la báscula. */
 void ui_show_description_and_wait_weight(const char *descripcion);
 
@@ -90,6 +98,13 @@ void ui_show_inconsistent_weight(void);
 
 /** Resultado guardado correctamente en inventario.csv. */
 void ui_show_result_ok(const char *codigo, int unidades_nuevas, int unidades_usadas);
+
+/**
+ * @brief Confirmacion de que datos_maestros.csv se ha actualizado (boton
+ * "Actualizar datos" desde ui_show_wait_weight_used()). El recuento que
+ * estuviera en curso se descarta a proposito, sin tocar inventario.csv.
+ */
+void ui_show_result_master_updated(const char *codigo, const char *descripcion, float tara_caja, float peso_unitario);
 
 /** Error fatal de arranque (SD o datos maestros): no hay botones, pantalla fija. */
 void ui_show_fatal_error(const char *msg);

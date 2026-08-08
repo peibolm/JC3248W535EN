@@ -206,16 +206,63 @@ static void write_row(FILE *f, const master_item_t *item)
             peso_str);
 }
 
+/* Copia tal cual (best-effort) el fichero actual a datos_maestros.csv.bak
+ * antes de tocarlo. Si falla, solo se avisa por log: no debe impedir la
+ * escritura principal (y si el fichero aun no existe -primera vez- no hay
+ * nada que respaldar). */
+static void backup_before_write(void)
+{
+    char bak_path[MASTER_PATH_MAX_LEN + 4];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", s_path);
+
+    FILE *in = fopen(s_path, "r");
+    if (!in) {
+        return;
+    }
+    FILE *out = fopen(bak_path, "w");
+    if (!out) {
+        ESP_LOGW(TAG, "No se pudo crear la copia de seguridad %s", bak_path);
+        fclose(in);
+        return;
+    }
+
+    char buf[256];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        fwrite(buf, 1, n, out);
+    }
+    fflush(out);
+    fsync(fileno(out));
+    fclose(out);
+    fclose(in);
+}
+
 /* Reescribe el fichero entero desde la tabla en RAM, con BOM UTF-8 al
  * principio (necesario para que Excel muestre bien las tildes/Ø/º de la
- * descripcion). Usado tanto al vincular un UID como al detectar, al cargar,
- * que el fichero en la SD todavia no tiene el BOM. */
+ * descripcion). Usado tanto al vincular un UID como al actualizar una
+ * entrada existente, y al detectar, al cargar, que el fichero en la SD
+ * todavia no tiene el BOM.
+ *
+ * Antes de escribir se guarda una copia de seguridad (backup_before_write),
+ * y la escritura en si va a un fichero .tmp + fsync, sustituyendo el
+ * original solo al final (remove + rename) - nunca se trunca el fichero
+ * real en sitio. FatFs no permite un rename() atomico que sustituya un
+ * destino ya existente (falla si el destino existe), asi que el remove+
+ * rename no se puede evitar del todo, pero asi se reduce la ventana de riesgo
+ * de "todo el tiempo que tarda en escribirse el fichero entero" a "dos
+ * llamadas seguidas" - y con la copia de seguridad, un fallo a medias deja
+ * de todas formas un .bak recuperable a mano desde la SD. */
 static esp_err_t rewrite_full_file(void)
 {
+    backup_before_write();
+
+    char tmp_path[MASTER_PATH_MAX_LEN + 4];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", s_path);
+
     errno = 0;
-    FILE *f = fopen(s_path, "w");
+    FILE *f = fopen(tmp_path, "w");
     if (!f) {
-        ESP_LOGE(TAG, "No se pudo reescribir %s (errno=%d: %s)", s_path, errno, strerror(errno));
+        ESP_LOGE(TAG, "No se pudo crear %s (errno=%d: %s)", tmp_path, errno, strerror(errno));
         return ESP_FAIL;
     }
     fputs(CSV_UTF8_BOM, f);
@@ -227,6 +274,13 @@ static esp_err_t rewrite_full_file(void)
     fflush(f);
     fsync(fileno(f));
     fclose(f);
+
+    errno = 0;
+    remove(s_path);
+    if (rename(tmp_path, s_path) != 0) {
+        ESP_LOGE(TAG, "No se pudo renombrar %s a %s (errno=%d: %s)", tmp_path, s_path, errno, strerror(errno));
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 
@@ -283,5 +337,31 @@ esp_err_t csv_master_link_uid(const char *codigo, const char *uid_nfc)
     }
 
     ESP_LOGI(TAG, "UID %s vinculado al codigo %s (datos_maestros.csv reescrito)", uid_nfc, codigo);
+    return ESP_OK;
+}
+
+esp_err_t csv_master_update_by_codigo(const master_item_t *item)
+{
+    size_t idx = 0;
+    bool found = false;
+    for (size_t i = 0; i < s_count; i++) {
+        if (strcasecmp(s_items[i].codigo, item->codigo) == 0) {
+            idx = i;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    s_items[idx] = *item;
+
+    esp_err_t ret = rewrite_full_file();
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "Datos maestros actualizados para %s (datos_maestros.csv reescrito)", item->codigo);
     return ESP_OK;
 }

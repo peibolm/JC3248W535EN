@@ -20,6 +20,7 @@ static lv_obj_t *s_btn_cancel;
 
 static lv_obj_t *s_btn_restart;
 static lv_obj_t *s_btn_usb_mode;
+static lv_obj_t *s_btn_update_master;
 
 static lv_obj_t *s_label_keypad_display;
 static lv_obj_t *s_btnmatrix_keypad;
@@ -86,6 +87,13 @@ static void restart_btn_event_cb(lv_event_t *e)
 {
     (void)e;
     esp_restart();
+}
+
+static void update_master_btn_event_cb(lv_event_t *e)
+{
+    (void)e;
+    app_event_t evt = {.type = APP_EVT_UI_UPDATE_MASTER_PRESSED};
+    app_events_post(&evt);
 }
 
 static void usb_mode_btn_event_cb(lv_event_t *e)
@@ -241,6 +249,7 @@ static void hide_interactive_widgets(void)
     set_widget_visible(s_btn_cancel, false);
     set_widget_visible(s_btn_restart, false);
     set_widget_visible(s_btn_usb_mode, false);
+    set_widget_visible(s_btn_update_master, false);
     set_widget_visible(s_btnmatrix_keypad, false);
     set_widget_visible(s_label_keypad_display, false);
     set_widget_visible(s_table_recent, false);
@@ -376,6 +385,23 @@ void ui_screens_init(lv_disp_t *disp)
     lv_obj_set_style_text_font(label_btn_usb_mode, &lv_font_montserrat_12, 0);
     lv_obj_center(label_btn_usb_mode);
 
+    /* Solo visible en ui_show_wait_weight_used(): esquina superior derecha,
+     * libre ahi (el LED de estable ocupa la izquierda y el titulo/RETIRE
+     * NUEVOS el centro). Aborta el recuento en curso y lleva al mismo
+     * tramo final que el alta de material nuevo (unidades -> tara ->
+     * calibre -> cabeza), pero para CORREGIR la entrada ya existente en
+     * vez de crear una nueva - ver handle_update_master_pressed() en
+     * app_fsm.c. */
+    s_btn_update_master = lv_btn_create(scr);
+    lv_obj_set_size(s_btn_update_master, 150, 36);
+    lv_obj_align(s_btn_update_master, LV_ALIGN_TOP_RIGHT, -6, 6);
+    lv_obj_set_style_bg_color(s_btn_update_master, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_add_event_cb(s_btn_update_master, update_master_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_btn_update_master = lv_label_create(s_btn_update_master);
+    lv_label_set_text(label_btn_update_master, "Actualizar datos");
+    lv_obj_set_style_text_font(label_btn_update_master, &lv_font_montserrat_12, 0);
+    lv_obj_center(label_btn_update_master);
+
     bsp_display_unlock();
 
     ui_show_idle(NULL, 0);
@@ -454,6 +480,32 @@ void ui_show_duplicate_warning(const char *descripcion)
     bsp_display_unlock();
 }
 
+void ui_show_tag_relink_warning(const char *codigo, const char *descripcion)
+{
+    char desc_buf[64];
+    sanitize_for_display(descripcion, desc_buf, sizeof(desc_buf));
+
+    char buf[220];
+    snprintf(buf, sizeof(buf),
+             "Codigo %s\n%s\n\n"
+             "Este codigo ya tiene OTRO tag NFC vinculado (se perdio o se\n"
+             "cambio el tag fisico de esta caja?).\n\n"
+             "Sobrescribir vincula ESTE tag a este codigo, sin tocar la\n"
+             "descripcion ni los pesos ya guardados.",
+             codigo, desc_buf);
+
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title("Codigo ya vinculado a otro tag");
+    lv_label_set_text(s_label_detail, buf);
+
+    lv_label_set_text(s_label_btn_confirm, "Sobrescribir");
+    set_widget_visible(s_btn_confirm, true);
+    set_widget_visible(s_btn_cancel, true);
+
+    bsp_display_unlock();
+}
+
 void ui_show_description_and_wait_weight(const char *descripcion)
 {
     char titulo[80];
@@ -494,6 +546,16 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
 
     bsp_display_lock(0);
     hide_interactive_widgets();
+
+    /* El titulo (descripcion del articulo, p.ej. "BULON BC OX.XXxOX.XXx12o
+     * s/p 20181005") ocupa normalmente 2 lineas a los 90% de ancho por
+     * defecto - y esa anchura por defecto se solapa con el boton
+     * "Actualizar datos" de la esquina superior derecha. Se estrecha a una
+     * franja segura entre el LED (izquierda) y el boton (derecha): por
+     * construccion ninguna longitud de texto puede alcanzar el boton, sea
+     * cual sea la descripcion. */
+    lv_obj_set_width(s_label_title, 260);
+    lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 50, 12);
     set_title(titulo);
     set_widget_visible(s_label_detail, false);
 
@@ -516,6 +578,7 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
     set_widget_visible(s_btn_confirm, true);
     set_widget_visible(s_btn_retry, true);
     set_widget_visible(s_btn_cancel, true);
+    set_widget_visible(s_btn_update_master, true);
 
     bsp_display_unlock();
 }
@@ -581,6 +644,25 @@ void ui_show_result_ok(const char *codigo, int unidades_nuevas, int unidades_usa
     bsp_display_lock(0);
     hide_interactive_widgets();
     set_title("Guardado en inventario");
+    lv_label_set_text(s_label_detail, buf);
+    bsp_display_unlock();
+}
+
+void ui_show_result_master_updated(const char *codigo, const char *descripcion, float tara_caja, float peso_unitario)
+{
+    char desc_buf[64];
+    sanitize_for_display(descripcion, desc_buf, sizeof(desc_buf));
+
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "Codigo %s\n%s\nTara: %.2f g    Peso unitario: %.4f g\n\n"
+             "El recuento en curso NO se ha guardado.\n"
+             "Vuelva a pasar el tag para inventariar.",
+             codigo, desc_buf, tara_caja, peso_unitario);
+
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title("Datos maestros actualizados");
     lv_label_set_text(s_label_detail, buf);
     bsp_display_unlock();
 }

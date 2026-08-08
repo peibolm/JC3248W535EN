@@ -78,6 +78,22 @@ esp_err_t csv_master_append(const master_item_t *item);
  */
 esp_err_t csv_master_link_uid(const char *codigo, const char *uid_nfc);
 
+/**
+ * @brief Sustituye descripcion/tara_caja/peso_unitario de una entrada ya
+ * existente (buscada por codigo), tanto en RAM como reescribiendo el
+ * fichero CSV completo en la SD. El uid_nfc lo decide el llamador (se suele
+ * pasar el mismo que ya tenia, sin cambiarlo).
+ *
+ * Antes de reescribir se guarda una copia de seguridad del fichero tal cual
+ * estaba (datos_maestros.csv.bak), y la reescritura en si se hace a un
+ * fichero temporal + fsync + reemplazo, no truncando el original en sitio -
+ * ver el comentario de rewrite_full_file() en csv_master.c.
+ *
+ * @return ESP_OK si se encontro y actualizo el codigo; ESP_ERR_NOT_FOUND si
+ *         no existe ninguna entrada con ese codigo.
+ */
+esp_err_t csv_master_update_by_codigo(const master_item_t *item);
+
 #ifdef __cplusplus
 }
 #endif

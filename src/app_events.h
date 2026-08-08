@@ -27,6 +27,7 @@ typedef enum {
     APP_EVT_UI_RETRY_PRESSED,
     APP_EVT_UI_KEYPAD_CONFIRMED,
     APP_EVT_UI_USB_MODE_PRESSED,
+    APP_EVT_UI_UPDATE_MASTER_PRESSED,
 } app_event_type_t;
 
 typedef struct {
