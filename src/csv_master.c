@@ -94,8 +94,12 @@ static bool parse_line(char *line, master_item_t *out)
     out->peso_unitario = parse_decimal(fields[4]);
 
     /* uid_nfc puede venir vacio (material precatalogado, pendiente de
-     * vincular a un tag fisico con csv_master_link_uid()). */
-    return (out->codigo[0] != '\0') && (out->peso_unitario > 0.0f);
+     * vincular a un tag fisico con csv_master_link_uid()) y tara_caja/
+     * peso_unitario tambien (precatalogado A MEDIAS: solo codigo y
+     * descripcion, pendiente de completar el resto - ver el "Caso B" del
+     * alta guiada en app_fsm.c). El unico campo que de verdad hace falta
+     * para que la fila tenga sentido es el codigo. */
+    return out->codigo[0] != '\0';
 }
 
 esp_err_t csv_master_load(const char *path)

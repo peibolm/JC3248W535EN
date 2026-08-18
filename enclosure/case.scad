@@ -117,9 +117,25 @@ pn532_hole_spacing_z  = 28;   // separacion vertical entre los 2 agujeros (corre
 // Diagonal invertida respecto a como estaba (corregido por el usuario):
 // un agujero arriba-izquierda y el otro abajo-derecha, no arriba-derecha/
 // abajo-izquierda - por eso el signo de Z va con -sx, no con sx.
-pn532_center_height = 80;   // altura del CENTRO del sensor desde la mesa (pedido por el usuario)
+//
+// OJO: la cota pedida por el usuario (que el brazo vuele por encima de la
+// bascula sin tocarla) es la altura hasta la CARA INFERIOR del brazo, NO
+// hasta su centro - con el centro a esta altura, la cara de abajo queda
+// pn532_arm_outer_h/2 mas baja y tropieza con la bascula. pn532_arm_outer_h
+// se calcula justo debajo (depende de pn532_h/pn532_arm_margin/wall, ya
+// definidos), y pn532_center_height sale de ahi.
+pn532_bottom_clear  = 80;   // altura desde la mesa hasta la cara INFERIOR del brazo (pedido por el usuario)
 pn532_overhang      = 30;   // cuanto sobresale el brazo hacia el usuario (pedido por el usuario)
 pn532_arm_margin    = 3;    // holgura interior alrededor del canto de la placa dentro del brazo
+
+// Tamano interior/exterior del brazo (se necesita YA para derivar
+// pn532_center_height a partir de pn532_bottom_clear, ver arriba).
+pn532_arm_inner_w = pn532_w + 2*pn532_arm_margin;
+pn532_arm_inner_h = pn532_h + 2*pn532_arm_margin;
+pn532_arm_outer_w = pn532_arm_inner_w + 2*wall;
+pn532_arm_outer_h = pn532_arm_inner_h + 2*wall;
+
+pn532_center_height = pn532_bottom_clear + pn532_arm_outer_h/2;
 
 // Grosor de la cara frontal SOLO en la zona donde apoya la placa. 0.8 no
 // es un numero redondo por casualidad: con boquilla de 0.4 son exactamente
@@ -135,12 +151,6 @@ pn532_seat_r     = 1.5;  // radio de esquina del asiento
 // tornillo que los atraviese asoma por la cara que va sobre la bascula, y
 // ademas mete acero al lado de la bobina. Ponerlo a true para recuperarlos.
 pn532_screw_holes = false;
-
-// Derivados: tamano interior/exterior del brazo.
-pn532_arm_inner_w = pn532_w + 2*pn532_arm_margin;
-pn532_arm_inner_h = pn532_h + 2*pn532_arm_margin;
-pn532_arm_outer_w = pn532_arm_inner_w + 2*wall;
-pn532_arm_outer_h = pn532_arm_inner_h + 2*wall;
 
 // ---- MAX3232 + DB9, asomando por la pared derecha ----
 // El modulo MAX3232 NO lleva taladros de fijacion propios (es una placa
@@ -165,11 +175,14 @@ max3232_center_y      = 26;  // profundidad (desde la pared frontal) del centro 
 // wall/db9_h) - asi el MAX3232 se puede pegar al suelo, y los 2 taladros
 // de los prisioneros no cargan solos con la fuerza de conectar/
 // desconectar el cable.
-max3232_center_z = 10;
+// Subido +3mm (pedido por el usuario): las soldaduras de la cara inferior
+// de la placa del MAX3232 no dejan que se asiente tan abajo como se midio
+// al principio, y los agujeros quedaban demasiado bajos.
+max3232_center_z = 13;
 
 // ---- Cable USB de alimentacion, pared derecha (mismo lado que el DB9,
 // pedido por el usuario) ----
-usbc_cutout_w = 11;  // en profundidad (Y)
+usbc_cutout_w = 14;  // en profundidad (Y) - +3mm (pedido por el usuario, quedaba muy justo)
 usbc_cutout_h = 6;   // en altura (Z)
 usbc_center_z = 30;  // por encima del hueco del DB9, sin solaparse con el
 usbc_center_y = 26;

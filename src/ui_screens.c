@@ -569,8 +569,14 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
 
     lv_label_set_text(s_stat_value_peso_total, peso_total_buf);
     lv_label_set_text(s_stat_value_uds_totales, uds_totales_buf);
-    lv_label_set_text(s_stat_value_nuevas, "0");
+    lv_label_set_text(s_stat_value_nuevas, "0.0");
     lv_label_set_text(s_stat_value_usadas, uds_totales_buf);
+    /* El color de aviso (ui_update_wait_weight_live) se queda "pegado" en
+     * el objeto LVGL entre pantallas: se resetea aqui para que un aviso
+     * del articulo anterior no aparezca ya puesto antes de la primera
+     * lectura de este. */
+    lv_obj_set_style_text_color(s_stat_value_nuevas, lv_color_hex(0x202632), 0);
+    lv_obj_set_style_text_color(s_stat_value_usadas, lv_color_hex(0x202632), 0);
     set_widget_visible(s_cont_stats, true);
 
     layout_bottom_row_3_buttons();
@@ -583,16 +589,51 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
     bsp_display_unlock();
 }
 
-void ui_update_wait_weight_live(int unidades_nuevas, int unidades_usadas, bool stable)
+void ui_show_confirm_articulo(const char *codigo, const char *descripcion)
+{
+    char titulo[80];
+    sanitize_for_display(descripcion, titulo, sizeof(titulo));
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Codigo %s\n\n¿Es este el material que se esta contando?", codigo);
+
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title(titulo);
+    lv_label_set_text(s_label_detail, buf);
+
+    layout_bottom_row_3_buttons();
+    lv_label_set_text(s_label_btn_retry, "Revisar codigo");
+    set_widget_visible(s_btn_confirm, true);
+    set_widget_visible(s_btn_retry, true);
+    set_widget_visible(s_btn_cancel, true);
+
+    bsp_display_unlock();
+}
+
+void ui_update_wait_weight_live(float unidades_nuevas, float unidades_usadas, bool stable,
+                                 bool peso_unitario_sospechoso)
 {
     char nuevas_buf[12];
-    snprintf(nuevas_buf, sizeof(nuevas_buf), "%d", unidades_nuevas);
+    snprintf(nuevas_buf, sizeof(nuevas_buf), "%.1f", unidades_nuevas);
     char usadas_buf[12];
-    snprintf(usadas_buf, sizeof(usadas_buf), "%d", unidades_usadas);
+    snprintf(usadas_buf, sizeof(usadas_buf), "%.1f", unidades_usadas);
+
+    /* Naranja si el desvio respecto a un numero entero supera la
+     * tolerancia (ver UNIT_ROUNDING_TOLERANCE en app_fsm.c) - aviso de que
+     * el peso_unitario guardado podria estar mal, o de que hay algo raro
+     * en la caja. Color normal en caso contrario (hay que fijarlo
+     * explicitamente los dos casos: el label no tiene color propio, y sin
+     * esto se quedaria "pegado" en naranja tras el primer aviso). */
+    lv_color_t color = peso_unitario_sospechoso
+        ? lv_palette_main(LV_PALETTE_ORANGE)
+        : lv_color_hex(0x202632);
 
     bsp_display_lock(0);
     lv_label_set_text(s_stat_value_nuevas, nuevas_buf);
     lv_label_set_text(s_stat_value_usadas, usadas_buf);
+    lv_obj_set_style_text_color(s_stat_value_nuevas, color, 0);
+    lv_obj_set_style_text_color(s_stat_value_usadas, color, 0);
     lv_led_set_color(s_led_stable, stable ? lv_palette_main(LV_PALETTE_GREEN) : lv_palette_main(LV_PALETTE_RED));
     bsp_display_unlock();
 }

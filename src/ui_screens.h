@@ -54,6 +54,17 @@ void ui_show_duplicate_warning(const char *descripcion);
  */
 void ui_show_tag_relink_warning(const char *codigo, const char *descripcion);
 
+/**
+ * @brief Al dar de alta un tag nuevo, el código tecleado ya existe en
+ * datos_maestros.csv: se muestra la descripción a toda pantalla, ANTES de
+ * pedir nada más (unidades, tara...), para poder validar de un vistazo que
+ * el código corresponde de verdad al material que se está contando -
+ * evita arrastrar un error de tecleo o una caja mal etiquetada varios
+ * pasos sin darse cuenta. "Confirmar" continúa; "Revisar código" vuelve a
+ * teclearlo; "Cancelar" vuelve a reposo.
+ */
+void ui_show_confirm_articulo(const char *codigo, const char *descripcion);
+
 /** Muestra la descripción del artículo y pide colocarlo en la báscula. */
 void ui_show_description_and_wait_weight(const char *descripcion);
 
@@ -71,11 +82,18 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
 
 /**
  * @brief Actualiza las unidades nuevas retiradas y usadas restantes (en
- * vivo, en grande) y el indicador de estable/inestable (verde/rojo) de la
- * pantalla de ui_show_wait_weight_used(). Se llama en cada muestra de la
- * báscula, sea o no estable, para dar feedback continuo.
+ * vivo, en grande, con un decimal) y el indicador de estable/inestable
+ * (verde/rojo) de la pantalla de ui_show_wait_weight_used(). Se llama en
+ * cada muestra de la báscula, sea o no estable, para dar feedback continuo.
+ *
+ * El decimal es a propósito: deja ver de un vistazo cómo de cerca está la
+ * cuenta de un número entero, es decir, cómo de fiable es el
+ * peso_unitario guardado para este artículo. Si @p peso_unitario_sospechoso
+ * es true (el desvío supera la tolerancia), el número se resalta para
+ * avisar de que puede haber un error de calibración o algo raro en la caja.
  */
-void ui_update_wait_weight_live(int unidades_nuevas, int unidades_usadas, bool stable);
+void ui_update_wait_weight_live(float unidades_nuevas, float unidades_usadas, bool stable,
+                                 bool peso_unitario_sospechoso);
 
 /**
  * @brief Pide vaciar la caja (retirar todos los utiles) y confirmar con el

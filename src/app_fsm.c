@@ -64,6 +64,10 @@ typedef enum {
     APP_STATE_REG_ENTER_CODE,        /* teclado: ultimos digitos del codigo */
     APP_STATE_REG_CODE_DUPLICATE,    /* el codigo generado ya tiene OTRO tag vinculado (se perdio/cambio el
                                        * fisico?) -> Sobrescribir re-vincula este tag, Cancelar vuelve a reposo */
+    APP_STATE_REG_CONFIRM_ARTICULO,  /* el codigo tecleado ya existe -> se muestra la descripcion a toda
+                                       * pantalla para validar que es el material correcto ANTES de pedir
+                                       * nada mas, evita contar con el codigo/material equivocado por un
+                                       * error de tecleo o una caja mal etiquetada */
     APP_STATE_REG_ENTER_UNITS,       /* teclado: unidades totales (entero, manual) */
     APP_STATE_REG_WAIT_TARE,         /* pesando la caja vacia */
     APP_STATE_REG_ENTER_CALIBRE,     /* teclado decimal: calibre */
@@ -96,6 +100,16 @@ typedef struct {
      * en vez de csv_master_append) y se salta pedir el codigo, que ya se
      * conoce. */
     bool reg_is_update;
+    /* true si el tag que se esta registrando (nuevo, uid no encontrado)
+     * corresponde a un codigo YA EXISTENTE en datos_maestros al que le
+     * falta tara y/o peso_unitario ("Caso B": precatalogado a medias, con
+     * codigo+descripcion pero sin completar). Igual que reg_is_update, se
+     * salta calibre/cabeza y se actualiza la fila en vez de anadir una
+     * nueva - pero ADEMAS hay que vincular el tag al terminar (por eso no
+     * comparten el mismo flag ni la misma funcion de cierre), y el destino
+     * final es continuar el inventariado (WAIT_WEIGHT_USED), no volver a
+     * reposo. */
+    bool reg_completando_existente;
 } process_ctx_t;
 
 static app_state_t s_state = APP_STATE_IDLE;
@@ -128,7 +142,9 @@ static void go_idle(void)
 
 static void finish_used_weighing(float weight_g);
 static void finish_master_update(void);
+static void finish_master_completion(void);
 static void link_tag_and_proceed(const master_item_t *existing);
+static void route_existing_articulo(const master_item_t *existing);
 
 /* Arma la pesada aplicando el filtro de peso minimo solo cuando el estado
  * de destino es una pesada de "caja completa" (normal o de alta de
@@ -182,17 +198,35 @@ static void check_screen_dim(void)
     }
 }
 
-static int units_from_weight(float peso_bruto_g)
+/* Unidades SIN REDONDEAR a partir del peso: sirve tanto para el resultado
+ * final (unidades_from_weight() redondea esto al mas proximo, con
+ * lroundf) como para mostrar en vivo cuantos decimales de margen hay -
+ * cuanto mas cerca de un entero, mas fiable es el peso_unitario guardado
+ * en datos_maestros para este articulo. */
+static float units_from_weight_f(float peso_bruto_g)
 {
     float peso_neto = peso_bruto_g - s_ctx.tara_caja;
     if (peso_neto < 0.0f) {
         peso_neto = 0.0f;
     }
     if (s_ctx.peso_unitario <= 0.0f) {
-        return 0;
+        return 0.0f;
     }
-    return (int)lroundf(peso_neto / s_ctx.peso_unitario);
+    return peso_neto / s_ctx.peso_unitario;
 }
+
+static int units_from_weight(float peso_bruto_g)
+{
+    return (int)lroundf(units_from_weight_f(peso_bruto_g));
+}
+
+/* Cuanto se puede alejar la cuenta en vivo de un numero entero (en
+ * unidades, no en gramos - independiente del peso_unitario de cada
+ * articulo) antes de avisar de que el peso_unitario guardado podria estar
+ * mal calibrado, o de que en la caja hay algo que no cuadra (una pieza de
+ * otro tipo, etc). 0.15 = un 15% de una unidad; ajustar aqui si en la
+ * practica avisa demasiado o demasiado poco. */
+#define UNIT_ROUNDING_TOLERANCE 0.15f
 
 static void handle_nfc_tag(const char *uid_hex)
 {
@@ -317,6 +351,37 @@ static void finish_master_update(void)
     go_idle();
 }
 
+/* Termina de rellenar un codigo precatalogado al que le faltaba tara y/o
+ * peso_unitario ("Caso B"): guarda esos datos (mas el UID del tag que se
+ * esta registrando, que hasta ahora no tenia ninguno) en datos_maestros, y
+ * CONTINUA el inventariado igual que un articulo ya completo -a
+ * diferencia de finish_master_update(), esto no viene de corregir un dato
+ * ya bueno sino de completar uno que faltaba, asi que no tiene sentido
+ * descartar el recuento: se seguia con el mismo tag/caja que se acaba de
+ * pesar. */
+static void finish_master_completion(void)
+{
+    master_item_t completado = {0};
+    strlcpy(completado.uid_nfc, s_ctx.reg_uid, sizeof(completado.uid_nfc));
+    strlcpy(completado.codigo, s_ctx.codigo, sizeof(completado.codigo));
+    strlcpy(completado.descripcion, s_ctx.descripcion, sizeof(completado.descripcion));
+    completado.tara_caja = s_ctx.tara_caja;
+    completado.peso_unitario = s_ctx.peso_unitario;
+
+    if (csv_master_update_by_codigo(&completado) != ESP_OK) {
+        ESP_LOGE(TAG, "No se pudo completar datos_maestros.csv para %s", s_ctx.codigo);
+    }
+
+    ESP_LOGI(TAG, "Precatalogado %s completado: tara=%.2fg peso_unit=%.4fg uid=%s, unidades totales=%d",
+             s_ctx.codigo, s_ctx.tara_caja, s_ctx.peso_unitario, s_ctx.reg_uid, s_ctx.unidades_totales);
+
+    s_state = APP_STATE_WAIT_WEIGHT_USED;
+    s_ctx.tiene_lectura_usados = false;
+    s_ctx.peso_total_g = s_ctx.reg_peso_total;
+    ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+    start_weighing_for_state(s_state);
+}
+
 /* Vincula el tag que se esta registrando (s_ctx.reg_uid) a una entrada YA
  * EXISTENTE de datos_maestros (descripcion/tara/peso_unitario conocidos de
  * antemano) y continua directo a la vigilancia de retirada, igual que un
@@ -345,6 +410,48 @@ static void link_tag_and_proceed(const master_item_t *existing)
     s_ctx.peso_total_g = s_ctx.reg_peso_total;
     ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
     start_weighing_for_state(s_state);
+}
+
+/* Se llama tras confirmar en APP_STATE_REG_CONFIRM_ARTICULO (el operario ya
+ * ha validado que la descripcion es la del material que tiene delante).
+ * A partir de aqui, decide Caso A (todo completo, solo vincular) o Caso B
+ * (falta tara y/o peso_unitario, hay que completarlo) - s_ctx.descripcion/
+ * tara_caja/peso_unitario ya estan puestos desde que se encontro el
+ * codigo. */
+static void route_existing_articulo(const master_item_t *existing)
+{
+    bool falta_tara = s_ctx.tara_caja <= 0.0f;
+    bool falta_peso_unitario = s_ctx.peso_unitario <= 0.0f;
+
+    if (!falta_tara && !falta_peso_unitario) {
+        /* Caso A: ya esta todo, solo hace falta vincular el tag. */
+        link_tag_and_proceed(existing);
+        return;
+    }
+
+    /* Caso B: falta tara y/o peso_unitario. Se completa lo que falte,
+     * reutilizando el mismo tramo de pesada del alta nueva, pero sin tocar
+     * la descripcion ni pedir calibre/cabeza, y actualizando la fila en
+     * vez de anadir una nueva (ver finish_master_completion()). */
+    s_ctx.reg_completando_existente = true;
+
+    if (falta_peso_unitario) {
+        /* Sin peso_unitario no se puede saber cuantas unidades hay con
+         * solo el peso total: hacen falta las unidades reales, tecleadas a
+         * mano. Si ADEMAS falta la tara, tras teclearlas se pedira pesar
+         * la caja vacia (ver REG_ENTER_UNITS); si la tara ya se conocia,
+         * se calcula ya mismo sin pesar nada mas (ver REG_ENTER_UNITS). */
+        s_state = APP_STATE_REG_ENTER_UNITS;
+        ui_show_keypad("Unidades totales en la caja", false, 5);
+    } else {
+        /* Solo falta la tara, el peso_unitario ya se conocia: basta con
+         * pesar la caja vacia, las unidades salen solas de ahi (ver
+         * REG_WAIT_TARE en handle_confirm_pressed). */
+        s_state = APP_STATE_REG_WAIT_TARE;
+        s_ctx.tiene_lectura_tara = false;
+        ui_show_wait_tare();
+        start_weighing_for_state(s_state);
+    }
 }
 
 static void handle_scale_stable(float weight_g)
@@ -428,15 +535,21 @@ static void handle_scale_reading(float weight_g, bool stable)
         return;
     }
 
-    int unidades_nuevas = s_ctx.unidades_totales - units_from_weight(weight_g);
-    if (unidades_nuevas < 0) {
-        unidades_nuevas = 0;
-    } else if (unidades_nuevas > s_ctx.unidades_totales) {
-        unidades_nuevas = s_ctx.unidades_totales;
-    }
-    int unidades_usadas = s_ctx.unidades_totales - unidades_nuevas;
+    /* Sin redondear todavia y SIN acotar a [0, total]: el aviso de
+     * peso_unitario sospechoso mira el desvio real, antes de que el
+     * recorte a los limites lo pueda enmascarar. */
+    float unidades_nuevas_f = (float)s_ctx.unidades_totales - units_from_weight_f(weight_g);
+    bool peso_unitario_sospechoso =
+        fabsf(unidades_nuevas_f - roundf(unidades_nuevas_f)) > UNIT_ROUNDING_TOLERANCE;
 
-    ui_update_wait_weight_live(unidades_nuevas, unidades_usadas, stable);
+    if (unidades_nuevas_f < 0.0f) {
+        unidades_nuevas_f = 0.0f;
+    } else if (unidades_nuevas_f > (float)s_ctx.unidades_totales) {
+        unidades_nuevas_f = (float)s_ctx.unidades_totales;
+    }
+    float unidades_usadas_f = (float)s_ctx.unidades_totales - unidades_nuevas_f;
+
+    ui_update_wait_weight_live(unidades_nuevas_f, unidades_usadas_f, stable, peso_unitario_sospechoso);
 }
 
 static void handle_scale_timeout(void)
@@ -512,6 +625,19 @@ static void handle_confirm_pressed(void)
         break;
     }
 
+    case APP_STATE_REG_CONFIRM_ARTICULO: {
+        /* El operario ha confirmado que la descripcion mostrada es la del
+         * material que tiene delante - ahora si, se decide Caso A/B. */
+        const master_item_t *existing = csv_master_find_by_codigo(s_ctx.codigo);
+        if (!existing) {
+            ESP_LOGW(TAG, "Codigo %s ya no existe en datos maestros, se cancela", s_ctx.codigo);
+            go_idle();
+            break;
+        }
+        route_existing_articulo(existing);
+        break;
+    }
+
     case APP_STATE_WAIT_WEIGHT_USED:
         if (!s_ctx.tiene_lectura_usados) {
             break; /* aun no ha llegado ninguna lectura, se ignora el toque */
@@ -526,17 +652,29 @@ static void handle_confirm_pressed(void)
         s_ctx.tara_caja = s_ctx.pending_weight_g;
         ESP_LOGI(TAG, "Alta material nuevo: tara caja = %.2f g", s_ctx.tara_caja);
         if (s_ctx.unidades_totales > 0) {
+            /* Unidades ya conocidas (tecleadas en REG_ENTER_UNITS): despejar
+             * el peso_unitario, como siempre. */
             s_ctx.peso_unitario = (s_ctx.reg_peso_total - s_ctx.tara_caja) / s_ctx.unidades_totales;
+            if (s_ctx.peso_unitario < 0.0f) {
+                s_ctx.peso_unitario = 0.0f;
+            }
         } else {
-            s_ctx.peso_unitario = 0.0f;
-        }
-        if (s_ctx.peso_unitario < 0.0f) {
-            s_ctx.peso_unitario = 0.0f;
+            /* Caso B, solo faltaba la tara: el peso_unitario ya se conocia
+             * de antes (por eso no se paso por REG_ENTER_UNITS) y ahora que
+             * ya se tiene la tara, las unidades salen solas del peso total -
+             * mismo calculo que un articulo ya completo (units_from_weight
+             * usa s_ctx.tara_caja/peso_unitario, ya puestos los dos). */
+            s_ctx.unidades_totales = units_from_weight(s_ctx.reg_peso_total);
         }
         if (s_ctx.reg_is_update) {
             /* Actualizando: la descripcion (calibre/cabeza) no cambia, solo
              * tara/peso_unitario - no tiene sentido volver a pedirla. */
             finish_master_update();
+        } else if (s_ctx.reg_completando_existente) {
+            /* Caso B: la descripcion ya existia, tampoco se pide
+             * calibre/cabeza - y a diferencia de reg_is_update, se sigue
+             * inventariando en vez de volver a reposo. */
+            finish_master_completion();
         } else {
             s_state = APP_STATE_REG_ENTER_CALIBRE;
             ui_show_keypad("Calibre (mm)", true, 6);
@@ -600,10 +738,19 @@ static void handle_keypad_confirmed(const char *text)
 
         if (existing) {
             /* Material precatalogado (fila en datos_maestros.csv sin tag
-             * aun vinculado): ya se conocen descripcion/tara/peso_unitario,
-             * asi que basta con vincular este tag y seguir con el tramo
-             * final del flujo normal, igual que un articulo ya conocido. */
-            link_tag_and_proceed(existing);
+             * aun vinculado): antes de tocar nada, se muestra la
+             * descripcion a toda pantalla para que el operario valide que
+             * el codigo tecleado es de verdad el material que tiene
+             * delante (evita arrastrar un error de tecleo o una caja mal
+             * etiquetada varios pasos sin darse cuenta). La decision de
+             * Caso A/B (ver route_existing_articulo()) se toma DESPUES de
+             * confirmar, no aqui. */
+            strlcpy(s_ctx.descripcion, existing->descripcion, sizeof(s_ctx.descripcion));
+            s_ctx.tara_caja = existing->tara_caja;
+            s_ctx.peso_unitario = existing->peso_unitario;
+
+            s_state = APP_STATE_REG_CONFIRM_ARTICULO;
+            ui_show_confirm_articulo(s_ctx.codigo, s_ctx.descripcion);
             break;
         }
 
@@ -622,6 +769,19 @@ static void handle_keypad_confirmed(const char *text)
             break;
         }
         s_ctx.unidades_totales = unidades;
+
+        if (s_ctx.reg_completando_existente && s_ctx.tara_caja > 0.0f) {
+            /* Caso B, solo faltaba el peso_unitario: la tara ya se conocia
+             * de antes, no hace falta volver a pesar - se calcula ya
+             * mismo y se termina. */
+            s_ctx.peso_unitario = (s_ctx.reg_peso_total - s_ctx.tara_caja) / s_ctx.unidades_totales;
+            if (s_ctx.peso_unitario < 0.0f) {
+                s_ctx.peso_unitario = 0.0f;
+            }
+            finish_master_completion();
+            break;
+        }
+
         s_state = APP_STATE_REG_WAIT_TARE;
         s_ctx.tiene_lectura_tara = false;
         ui_show_wait_tare();
@@ -637,12 +797,20 @@ static void handle_keypad_confirmed(const char *text)
     }
 
     case APP_STATE_REG_ENTER_CABEZA: {
-        /* Solo se llega aqui dando de alta un material nuevo: al
-         * actualizar uno existente (reg_is_update) ya se termina antes,
-         * justo tras la tara, sin tocar la descripcion. */
+        /* Solo se llega aqui dando de alta un material TOTALMENTE nuevo (ni
+         * codigo ni descripcion existian): al completar uno precatalogado
+         * (reg_completando_existente) o actualizar uno existente
+         * (reg_is_update) ya se termina antes, justo tras la tara, sin
+         * tocar la descripcion.
+         *
+         * La descripcion se marca "TEMPORAL calibre x cabeza" en vez de
+         * generar la frase completa del bulon: no todos los bulones siguen
+         * el mismo plano, y el calibre/cabeza reales son mejor pista que
+         * una descripcion inventada. Luego, en Excel, se buscan las filas
+         * con "TEMPORAL" y se les pone la descripcion correcta a mano. */
         float cabeza = strtof(text, NULL);
         snprintf(s_ctx.descripcion, sizeof(s_ctx.descripcion),
-                 "BULÓN BC Ø%.2fxØ%.2fx12º s/p 20181005", s_ctx.reg_calibre, cabeza);
+                 "TEMPORAL %.2fx%.2f", s_ctx.reg_calibre, cabeza);
         ESP_LOGI(TAG, "Alta material nuevo: codigo=%s descripcion=%s tara=%.2fg peso_unit=%.4fg",
                  s_ctx.codigo, s_ctx.descripcion, s_ctx.tara_caja, s_ctx.peso_unitario);
         finish_new_material_registration();
@@ -660,6 +828,15 @@ static void handle_retry_pressed(void)
     case APP_STATE_ERROR_DISMISSABLE:
     case APP_STATE_DUPLICATE_CONFIRM:
         go_idle();
+        break;
+
+    case APP_STATE_REG_CONFIRM_ARTICULO:
+        /* "Revisar codigo": la descripcion mostrada NO es el material que
+         * se esta contando - probable error de tecleo. Se vuelve a pedir
+         * el codigo sin perder el resto del contexto (peso total ya
+         * pesado, tag ya leido). */
+        s_state = APP_STATE_REG_ENTER_CODE;
+        ui_show_keypad("Ultimos digitos del codigo (13 + estos digitos)", false, REG_CODIGO_MAX_DIGITS);
         break;
 
     case APP_STATE_WAIT_WEIGHT_USED:
@@ -735,6 +912,7 @@ static void handle_cancel_pressed(void)
     case APP_STATE_REG_WAIT_WEIGHT_TOTAL:
     case APP_STATE_REG_ENTER_CODE:
     case APP_STATE_REG_CODE_DUPLICATE:
+    case APP_STATE_REG_CONFIRM_ARTICULO:
     case APP_STATE_REG_ENTER_UNITS:
     case APP_STATE_REG_WAIT_TARE:
     case APP_STATE_REG_ENTER_CALIBRE:

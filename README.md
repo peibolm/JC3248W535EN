@@ -10,22 +10,141 @@ quedan y cuántas se han usado, sin teclear números.
 ## Cómo se usa
 
 1. **Reposo**: la pantalla muestra los últimos artículos inventariados.
-2. **Pasar el tag NFC** de la caja sobre el lector (PN532). Dos casos:
+2. **Pasar el tag NFC** de la caja sobre el lector (PN532). Tres casos:
    - **Artículo conocido**: coloca la caja completa en la báscula. En cuanto el peso se
      estabiliza, el sistema calcula las unidades totales solo (`peso / peso_unitario`) y pasa
      directo a "RETIRE NUEVOS".
-   - **Tag no reconocido**: arranca el alta guiada (peso total → código → unidades → tara vacía →
-     calibre/cabeza), y sigue con el mismo tramo final.
+   - **Tag no reconocido pero el código ya existe** en `datos_maestros.csv`: tras teclear el
+     código, se muestra la descripción a toda pantalla para confirmar que es el material correcto
+     (evita errores de tecleo o cajas mal etiquetadas). Si al artículo le faltaba la tara y/o el
+     peso unitario, se completan sobre la marcha (pesando la caja vacía y/o pidiendo las unidades)
+     sin volver a pedir la descripción.
+   - **Material totalmente nuevo**: arranca el alta guiada completa (peso total → código →
+     unidades → tara vacía → calibre/cabeza), con una descripción provisional
+     `TEMPORAL calibre x cabeza` pendiente de corregir a mano en Excel.
 3. **RETIRE NUEVOS**: mientras se van sacando piezas de la caja, la pantalla recalcula en vivo
    cuántas son nuevas y cuántas usadas. En cuanto la báscula vuelve a 0 (caja vacía), el sistema
    da el recuento por terminado solo — sin necesidad de pulsar nada ("v2 sin botones"). Confirmar
    sigue disponible como respaldo manual en cualquier momento.
 4. El resultado se guarda en `inventario.csv` en la microSD.
 
+## Pantallas
+
+Mockups de las pantallas reales de la app (layout y textos exactos del código; los códigos, pesos
+y cantidades son datos de ejemplo inventados para ilustrar).
+
+<table>
+<tr>
+<td width="50%">
+
+**Reposo**<br>
+Últimos artículos inventariados.
+<img src="docs/screens/01-reposo.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Coloque la caja**<br>
+Artículo reconocido por el tag NFC, esperando peso.
+<img src="docs/screens/02-coloque-caja.png" width="100%">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**RETIRE NUEVOS**<br>
+Recuento en vivo mientras se retiran piezas; termina solo al vaciar la caja.
+<img src="docs/screens/03-retire-nuevos.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Teclado numérico**<br>
+Filas altas ancladas dinámicamente — nunca se solapan con el título, sea cual sea su longitud.
+<img src="docs/screens/04-teclado.png" width="100%">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Confirmar peso**<br>
+Paso del alta de material nuevo.
+<img src="docs/screens/05-confirmar-peso.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Guardado en inventario**<br>
+Resultado final de un recuento.
+<img src="docs/screens/06-guardado.png" width="100%">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Artículo duplicado**<br>
+El código ya está inventariado hoy — sobrescribir o volver.
+<img src="docs/screens/07-articulo-duplicado.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Código ya vinculado a otro tag**<br>
+Tag físico perdido/sustituido — re-vincular o cancelar.
+<img src="docs/screens/08-tag-vinculado.png" width="100%">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Datos maestros actualizados**<br>
+Confirmación tras corregir tara/peso_unitario de un artículo.
+<img src="docs/screens/09-datos-actualizados.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Modo USB activo**<br>
+La SD ya es un disco USB en el PC; solo se sale reiniciando.
+<img src="docs/screens/10-modo-usb.png" width="100%">
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Peso de tara**<br>
+Alta de material nuevo o completando un precatalogado al que le faltaba la tara.
+<img src="docs/screens/11-peso-tara.png" width="100%">
+
+</td>
+<td width="50%">
+
+**Confirmar artículo**<br>
+Antes de pedir nada más, valida que el código tecleado corresponde al material real — evita errores de tecleo o cajas mal etiquetadas.
+<img src="docs/screens/12-confirmar-articulo.png" width="100%">
+
+</td>
+</tr>
+</table>
+
 ## Funcionalidades
 
-- **Alta guiada de material nuevo**: si el tag no está catalogado, pide peso total, código,
-  unidades, tara y dimensiones (calibre/cabeza), y genera la descripción sola.
+- **Alta guiada de material nuevo**: si el tag no está catalogado, distingue tres casos según lo
+  que ya haya en `datos_maestros.csv` para el código tecleado — completo (solo vincula el tag),
+  a medias (pide solo la tara y/o el peso unitario que falten) o inexistente (alta completa, con
+  descripción provisional `TEMPORAL calibre x cabeza`, a corregir luego en Excel). Antes de pedir
+  nada, siempre muestra la descripción a toda pantalla para validar que el código corresponde de
+  verdad al material que se está contando.
+- **Unidades con decimales en vivo**: mientras se retiran piezas, "Nuevas"/"Usadas" se muestran
+  con un decimal (sin redondear) para ver de un vistazo cómo de preciso es el `peso_unitario`
+  guardado; si el desvío respecto a un número entero supera un 15%, el número se resalta en
+  naranja como aviso de posible error de calibración. Lo que se guarda en `inventario.csv` sigue
+  siendo siempre un entero, redondeado al más próximo.
 - **Actualizar datos maestros**: si el peso unitario o la tara guardados están mal, un botón en la
   pantalla de retirada aborta el recuento en curso y vuelve a calcular tara/peso_unitario desde
   cero (sin tocar la descripción), reutilizando el mismo tramo de pesada del alta nueva.
@@ -59,6 +178,10 @@ El altavoz I2S de la propia placa (ampli NS4168, conector "Speak") está libre e
 ```
 uid_nfc;codigo;descripcion;tara_caja;peso_unitario
 ```
+`uid_nfc`, `tara_caja` y `peso_unitario` pueden venir vacíos (artículo precatalogado a la espera
+de que se complete desde la app). La `descripcion` de un alta totalmente nueva empieza como
+`TEMPORAL calibre x cabeza` — buscar "TEMPORAL" en Excel para corregirlas a mano, ya que no todos
+los bulones siguen el mismo formato de descripción.
 
 **`inventario.csv`** (registro de cada inventariado):
 ```
