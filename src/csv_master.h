@@ -28,6 +28,20 @@ typedef struct {
 } master_item_t;
 
 /**
+ * @brief Repara el fichero si un corte de corriente pilló una reescritura a
+ * medias (ver rewrite_full_file() en csv_master.c): si falta el fichero
+ * principal pero está el `.tmp` completo, lo asciende; si el principal
+ * existe, descarta el `.tmp` suelto.
+ *
+ * IMPORTANTE: hay que llamarla ANTES que sd_provision_ensure_master_header()
+ * y csv_master_load(). Si se llama después, sd_provision ya habrá creado un
+ * datos_maestros.csv vacío (solo cabecera) al no encontrarlo, esta función
+ * verá que "el principal existe" y borrará el `.tmp` que contiene los datos
+ * de verdad — dejando el catálogo vacío sin ningún aviso.
+ */
+void csv_master_recover_interrupted_rewrite(const char *path);
+
+/**
  * @brief Carga el fichero CSV completo (con cabecera) a memoria.
  *
  * Se debe llamar una única vez al arranque, tras montar la microSD.

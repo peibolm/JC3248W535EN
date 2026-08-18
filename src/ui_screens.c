@@ -485,7 +485,10 @@ void ui_show_tag_relink_warning(const char *codigo, const char *descripcion)
     char desc_buf[64];
     sanitize_for_display(descripcion, desc_buf, sizeof(desc_buf));
 
-    char buf[220];
+    /* codigo (31) + desc_buf (63) + texto fijo (~204) + nul caben de sobra
+     * en 340; con 220 el compilador avisaba (-Werror=format-truncation) de
+     * que en el peor caso (los dos campos al maximo) se podia truncar. */
+    char buf[340];
     snprintf(buf, sizeof(buf),
              "Codigo %s\n%s\n\n"
              "Este codigo ya tiene OTRO tag NFC vinculado (se perdio o se\n"
@@ -503,6 +506,17 @@ void ui_show_tag_relink_warning(const char *codigo, const char *descripcion)
     set_widget_visible(s_btn_confirm, true);
     set_widget_visible(s_btn_cancel, true);
 
+    bsp_display_unlock();
+}
+
+void ui_show_saving(void)
+{
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title("Guardando...");
+    lv_label_set_text(s_label_detail,
+        "Actualizando el registro de este codigo en la tarjeta.\n\n"
+        "No apague el equipo ni retire la tarjeta.");
     bsp_display_unlock();
 }
 
@@ -694,7 +708,10 @@ void ui_show_result_master_updated(const char *codigo, const char *descripcion, 
     char desc_buf[64];
     sanitize_for_display(descripcion, desc_buf, sizeof(desc_buf));
 
-    char buf[192];
+    /* Igual que en ui_show_tag_relink_warning(): con codigo+descripcion al
+     * maximo mas el texto fijo y los 2 numeros, 192 se quedaba corto para
+     * el peor caso (-Werror=format-truncation). */
+    char buf[280];
     snprintf(buf, sizeof(buf),
              "Codigo %s\n%s\nTara: %.2f g    Peso unitario: %.4f g\n\n"
              "El recuento en curso NO se ha guardado.\n"

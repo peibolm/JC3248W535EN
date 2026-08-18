@@ -587,6 +587,18 @@ static void finish_used_weighing(float weight_g)
 
     int unidades_nuevas = s_ctx.unidades_totales - unidades_usadas;
     if (s_ctx.overwrite_duplicate) {
+        /* Sobrescribir un codigo ya registrado obliga a reescribir
+         * inventario.csv entero; con el fichero ya crecido eso bloquea la
+         * pantalla lo suficiente como para que parezca colgada. Se avisa
+         * antes, y se cede el paso 100ms para que la tarea de dibujo de
+         * LVGL (prioridad 4, por debajo de esta maquina de estados, que va
+         * a 5) llegue a pintar el aviso ANTES de que empiece la escritura:
+         * sin esa pausa el mensaje puede aparecer cuando ya ha terminado,
+         * que es justo cuando ya no sirve. LVGL refresca cada 30ms. */
+        if (csv_inventory_has_codigo(s_ctx.codigo)) {
+            ui_show_saving();
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
         csv_inventory_append_or_update(s_ctx.codigo, unidades_nuevas, unidades_usadas);
     } else {
         csv_inventory_append(s_ctx.codigo, unidades_nuevas, unidades_usadas);

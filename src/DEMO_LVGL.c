@@ -126,6 +126,14 @@ void setup()
     ui_show_fatal_error("No se detecta la tarjeta microSD. Reinicie.");
     return;
   }
+  /* ANTES que nada: si un corte de corriente pillo una reescritura de
+   * datos_maestros.csv a medias, recuperarlo. El orden es critico y va
+   * justo aqui, delante de sd_provision: si se hiciera despues, este ya
+   * habria creado un fichero vacio con solo la cabecera al no encontrarlo,
+   * y la reparacion daria por bueno ese fichero vacio y borraria el .tmp
+   * con los datos reales. */
+  csv_master_recover_interrupted_rewrite(DATOS_MAESTROS_PATH);
+
   /* Solo crea datos_maestros.csv (vacio, con cabecera) si no existe ya en
    * la SD; los articulos se dan de alta desde la app. */
   sd_provision_ensure_master_header(DATOS_MAESTROS_PATH);

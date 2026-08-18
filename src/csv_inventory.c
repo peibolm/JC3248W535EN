@@ -162,11 +162,56 @@ static esp_err_t load_existing_codes(const char *path)
     return ESP_OK;
 }
 
+/* Repara el fichero si el ultimo apagado pillo una reescritura a medias.
+ *
+ * El esquema de escritura (ver csv_inventory_append_or_update) es:
+ *   1) volcar el contenido nuevo COMPLETO a inventario.csv.tmp + fsync
+ *   2) remove(inventario.csv)
+ *   3) rename(.tmp -> inventario.csv)
+ * FatFs no permite un rename atomico sobre un fichero que ya existe, asi
+ * que entre (2) y (3) hay un instante en el que no existe el fichero
+ * principal. Esta funcion cierra ese agujero al arrancar:
+ *   - Si el principal EXISTE, manda el: un .tmp suelto viene de una
+ *     reescritura que no llego a confirmarse (corte entre 1 y 2) y se
+ *     descarta, igual que una transaccion que no hizo commit.
+ *   - Si el principal NO existe pero si el .tmp, el corte fue entre (2) y
+ *     (3): el .tmp es el contenido nuevo y completo (ya paso por fsync),
+ *     asi que se asciende a principal.
+ * Sin este paso, el orden de escritura por si solo no protege de nada. */
+static void recover_interrupted_rewrite(void)
+{
+    char tmp_path[INVENTORY_PATH_MAX_LEN + 4];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", s_path);
+
+    FILE *main_f = fopen(s_path, "r");
+    if (main_f) {
+        fclose(main_f);
+        if (remove(tmp_path) == 0) {
+            ESP_LOGW(TAG, "Descartado %s: reescritura sin confirmar", tmp_path);
+        }
+        return;
+    }
+
+    FILE *tmp_f = fopen(tmp_path, "r");
+    if (!tmp_f) {
+        return; /* no hay ni principal ni temporal: arranque limpio */
+    }
+    fclose(tmp_f);
+
+    if (rename(tmp_path, s_path) == 0) {
+        ESP_LOGW(TAG, "Recuperado %s desde %s (reescritura interrumpida)", s_path, tmp_path);
+    } else {
+        ESP_LOGE(TAG, "No se pudo recuperar %s desde %s", s_path, tmp_path);
+    }
+}
+
 esp_err_t csv_inventory_init(const char *path)
 {
     strlcpy(s_path, path, sizeof(s_path));
     s_count = 0;
     s_recent_count = 0;
+
+    recover_interrupted_rewrite();
 
     FILE *probe = fopen(path, "r");
     if (!probe) {
@@ -271,13 +316,34 @@ esp_err_t csv_inventory_append_or_update(const char *codigo, int unidades_nuevas
                 INVENTORY_FIELD_SEP, unidades_usadas, INVENTORY_FIELD_SEP, hora);
     }
 
-    fflush(out);
-    fsync(fileno(out));
-    fclose(out);
+    /* No se toca el fichero bueno hasta estar seguros de que el nuevo se ha
+     * escrito ENTERO y ha llegado fisicamente a la tarjeta: si la SD falla
+     * o se llena a media escritura, se aborta dejando el original intacto
+     * en vez de sustituirlo por uno truncado. */
+    bool write_ok = (ferror(out) == 0);
+    if (write_ok) {
+        write_ok = (fflush(out) == 0) && (fsync(fileno(out)) == 0);
+    }
+    if (fclose(out) != 0) {
+        write_ok = false;
+    }
     fclose(in);
 
+    if (!write_ok) {
+        ESP_LOGE(TAG, "Fallo al escribir %s; se conserva %s sin tocar", tmp_path, s_path);
+        remove(tmp_path);
+        return ESP_FAIL;
+    }
+
+    /* Instante critico: aqui deja de existir el principal hasta que el
+     * rename termina. Si se corta la luz justo ahora, el .tmp completo
+     * sigue en la tarjeta y recover_interrupted_rewrite() lo asciende en
+     * el siguiente arranque. */
     remove(s_path);
-    rename(tmp_path, s_path);
+    if (rename(tmp_path, s_path) != 0) {
+        ESP_LOGE(TAG, "No se pudo renombrar %s a %s", tmp_path, s_path);
+        return ESP_FAIL;
+    }
 
     push_recent(codigo, unidades_nuevas, unidades_usadas);
 

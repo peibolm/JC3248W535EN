@@ -65,6 +65,23 @@ void ui_show_tag_relink_warning(const char *codigo, const char *descripcion);
  */
 void ui_show_confirm_articulo(const char *codigo, const char *descripcion);
 
+/**
+ * @brief Aviso de escritura larga en la tarjeta (reescritura completa de
+ * inventario.csv al sobrescribir un código ya registrado), para que no
+ * parezca que la pantalla se ha colgado.
+ *
+ * A propósito NO tiene ningún botón: mientras se escribe, la máquina de
+ * estados está bloqueada y cualquier toque quedaría encolado para
+ * ejecutarse al terminar, disparando una acción que el operario ya no
+ * espera.
+ *
+ * Quien la use debe ceder el paso (~100 ms) antes de empezar a escribir:
+ * la tarea de dibujo de LVGL tiene menos prioridad que la máquina de
+ * estados, así que sin esa pausa el aviso puede no llegar a pintarse hasta
+ * que la escritura ya ha terminado.
+ */
+void ui_show_saving(void);
+
 /** Muestra la descripción del artículo y pide colocarlo en la báscula. */
 void ui_show_description_and_wait_weight(const char *descripcion);
 

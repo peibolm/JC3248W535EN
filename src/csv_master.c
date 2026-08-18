@@ -102,6 +102,39 @@ static bool parse_line(char *line, master_item_t *out)
     return out->codigo[0] != '\0';
 }
 
+void csv_master_recover_interrupted_rewrite(const char *path)
+{
+    char tmp_path[MASTER_PATH_MAX_LEN + 4];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+
+    FILE *main_f = fopen(path, "r");
+    if (main_f) {
+        fclose(main_f);
+        /* El principal existe, asi que manda el: un .tmp suelto viene de
+         * una reescritura que no llego a confirmarse y se descarta, igual
+         * que una transaccion que no hizo commit. */
+        if (remove(tmp_path) == 0) {
+            ESP_LOGW(TAG, "Descartado %s: reescritura sin confirmar", tmp_path);
+        }
+        return;
+    }
+
+    FILE *tmp_f = fopen(tmp_path, "r");
+    if (!tmp_f) {
+        return; /* ni principal ni temporal: primer arranque o SD vacia */
+    }
+    fclose(tmp_f);
+
+    /* Falta el principal pero esta el .tmp: el corte fue justo entre el
+     * renombrado a .bak y el renombrado del .tmp al nombre bueno. El .tmp
+     * ya paso por fsync, esta completo, y es la version MAS NUEVA. */
+    if (rename(tmp_path, path) == 0) {
+        ESP_LOGW(TAG, "Recuperado %s desde %s (reescritura interrumpida)", path, tmp_path);
+    } else {
+        ESP_LOGE(TAG, "No se pudo recuperar %s desde %s", path, tmp_path);
+    }
+}
+
 esp_err_t csv_master_load(const char *path)
 {
     errno = 0;
@@ -210,58 +243,35 @@ static void write_row(FILE *f, const master_item_t *item)
             peso_str);
 }
 
-/* Copia tal cual (best-effort) el fichero actual a datos_maestros.csv.bak
- * antes de tocarlo. Si falla, solo se avisa por log: no debe impedir la
- * escritura principal (y si el fichero aun no existe -primera vez- no hay
- * nada que respaldar). */
-static void backup_before_write(void)
-{
-    char bak_path[MASTER_PATH_MAX_LEN + 4];
-    snprintf(bak_path, sizeof(bak_path), "%s.bak", s_path);
-
-    FILE *in = fopen(s_path, "r");
-    if (!in) {
-        return;
-    }
-    FILE *out = fopen(bak_path, "w");
-    if (!out) {
-        ESP_LOGW(TAG, "No se pudo crear la copia de seguridad %s", bak_path);
-        fclose(in);
-        return;
-    }
-
-    char buf[256];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-        fwrite(buf, 1, n, out);
-    }
-    fflush(out);
-    fsync(fileno(out));
-    fclose(out);
-    fclose(in);
-}
-
 /* Reescribe el fichero entero desde la tabla en RAM, con BOM UTF-8 al
  * principio (necesario para que Excel muestre bien las tildes/Ø/º de la
- * descripcion). Usado tanto al vincular un UID como al actualizar una
- * entrada existente, y al detectar, al cargar, que el fichero en la SD
- * todavia no tiene el BOM.
+ * descripcion). Usado al vincular un UID, al actualizar una entrada
+ * existente, y al detectar -al cargar- que el fichero en la SD todavia no
+ * tiene el BOM.
  *
- * Antes de escribir se guarda una copia de seguridad (backup_before_write),
- * y la escritura en si va a un fichero .tmp + fsync, sustituyendo el
- * original solo al final (remove + rename) - nunca se trunca el fichero
- * real en sitio. FatFs no permite un rename() atomico que sustituya un
- * destino ya existente (falla si el destino existe), asi que el remove+
- * rename no se puede evitar del todo, pero asi se reduce la ventana de riesgo
- * de "todo el tiempo que tarda en escribirse el fichero entero" a "dos
- * llamadas seguidas" - y con la copia de seguridad, un fallo a medias deja
- * de todas formas un .bak recuperable a mano desde la SD. */
+ * Secuencia:
+ *   1) volcar el contenido nuevo COMPLETO a .tmp, y comprobar que de
+ *      verdad se escribio entero y llego a la tarjeta (fsync). Hasta aqui
+ *      no se ha tocado el fichero bueno: si la SD falla o se llena a media
+ *      escritura, se aborta y el original sigue intacto.
+ *   2) el fichero actual pasa a ser .bak. Ojo: por RENOMBRADO, no
+ *      copiandolo. Renombrar solo toca la tabla de directorio, no mueve
+ *      datos, asi que la copia de seguridad sale gratis - antes se copiaba
+ *      entero, dos pasadas mas por el fichero (leerlo y reescribirlo), y
+ *      ahi estaba el grueso del retardo que se notaba al guardar.
+ *   3) el .tmp pasa a tener el nombre bueno.
+ *
+ * FatFs no permite un rename() atomico sobre un destino que ya existe, asi
+ * que entre (2) y (3) hay un instante sin fichero principal. Ese hueco lo
+ * cierra csv_master_recover_interrupted_rewrite() en el arranque
+ * siguiente; sin esa reparacion, este orden por si solo no protege de
+ * nada. */
 static esp_err_t rewrite_full_file(void)
 {
-    backup_before_write();
-
     char tmp_path[MASTER_PATH_MAX_LEN + 4];
+    char bak_path[MASTER_PATH_MAX_LEN + 4];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", s_path);
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", s_path);
 
     errno = 0;
     FILE *f = fopen(tmp_path, "w");
@@ -275,12 +285,26 @@ static esp_err_t rewrite_full_file(void)
     for (size_t i = 0; i < s_count; i++) {
         write_row(f, &s_items[i]);
     }
-    fflush(f);
-    fsync(fileno(f));
-    fclose(f);
+
+    bool write_ok = (ferror(f) == 0);
+    if (write_ok) {
+        write_ok = (fflush(f) == 0) && (fsync(fileno(f)) == 0);
+    }
+    if (fclose(f) != 0) {
+        write_ok = false;
+    }
+    if (!write_ok) {
+        ESP_LOGE(TAG, "Fallo al escribir %s; se conserva %s sin tocar", tmp_path, s_path);
+        remove(tmp_path);
+        return ESP_FAIL;
+    }
+
+    /* Si el principal todavia no existia (primera escritura), el rename
+     * falla y da igual: simplemente no hay version anterior que guardar. */
+    remove(bak_path);
+    rename(s_path, bak_path);
 
     errno = 0;
-    remove(s_path);
     if (rename(tmp_path, s_path) != 0) {
         ESP_LOGE(TAG, "No se pudo renombrar %s a %s (errno=%d: %s)", tmp_path, s_path, errno, strerror(errno));
         return ESP_FAIL;
