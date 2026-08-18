@@ -20,6 +20,7 @@
 #include "nfc_task.h"
 #include "scale_task.h"
 #include "usb_msc.h"
+#include "settings.h"
 
 #define DATOS_MAESTROS_PATH "/sdcard/datos_maestros.csv"
 #define INVENTARIO_PATH     "/sdcard/inventario.csv"
@@ -145,6 +146,9 @@ void setup()
     ui_show_fatal_error("No se pudo abrir/crear inventario.csv en la SD.");
     return;
   }
+
+  logSection("Load settings");
+  settings_init();
 
   logSection("Start app tasks");
   app_events_init();

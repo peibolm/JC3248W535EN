@@ -18,14 +18,15 @@
 #include "esp_bsp.h"
 #include "display.h"
 #include "usb_msc.h"
+#include "settings.h"
 
 static const char *TAG = "app_fsm";
 
 /* Atenuacion de pantalla por inactividad: sin toques, tags leidos ni
  * lecturas de peso durante este tiempo, se baja el brillo. Cualquier
- * actividad lo restaura al instante. */
-#define SCREEN_DIM_TIMEOUT_MS  (2 * 60 * 1000)
-#define SCREEN_DIM_BRIGHTNESS  5
+ * actividad lo restaura al instante. Tiempo/brillo son ajustables desde el
+ * menu de Ajustes (ver settings.h); SCREEN_DIM_CHECK_MS es solo la
+ * frecuencia interna de sondeo, no tiene sentido exponerla. */
 #define SCREEN_DIM_CHECK_MS    1000
 
 static bool s_screen_dimmed = false;
@@ -35,16 +36,6 @@ static bool s_screen_dimmed = false;
  * codigo de 10 digitos empezando por "13". */
 #define REG_CODIGO_BASE 1300000000L
 #define REG_CODIGO_MAX_DIGITS 8
-
-/* Al pesar la caja completa (primera pesada del flujo), se ignoran lecturas
- * por debajo de este umbral: son ruido/tara mientras la caja aun no esta
- * bien asentada en la bascula, no un peso real. */
-#define SCALE_MIN_TOTAL_WEIGHT_G 5.0f
-
-/* v2: mientras se retiran utiles nuevos, si la bascula vuelve a este umbral
- * (caja retirada por completo) se toma como disparador para terminar el
- * flujo automaticamente, sin necesidad de pulsar Confirmar. */
-#define SCALE_ZERO_THRESHOLD_G 0.5f
 
 static const char *MSG_REG_WEIGH_TOTAL = "Material nuevo: coloque la caja completa y espere...";
 static const char *MSG_UPDATE_WEIGH_TOTAL = "Actualizando datos maestros: coloque la caja completa y espere...";
@@ -72,6 +63,12 @@ typedef enum {
     APP_STATE_REG_WAIT_TARE,         /* pesando la caja vacia */
     APP_STATE_REG_ENTER_CALIBRE,     /* teclado decimal: calibre */
     APP_STATE_REG_ENTER_CABEZA,      /* teclado decimal: cabeza */
+
+    /* Menu de ajustes (solo accesible desde reposo) */
+    APP_STATE_SETTINGS_LIST,          /* lista de los 8 ajustes */
+    APP_STATE_SETTINGS_EXPLAIN,       /* descripcion/rango de un ajuste, antes de editarlo */
+    APP_STATE_SETTINGS_EDIT,          /* teclado, editando el ajuste seleccionado */
+    APP_STATE_SETTINGS_RESET_CONFIRM, /* confirmacion de "Restablecer valores de fabrica" */
 } app_state_t;
 
 typedef struct {
@@ -110,6 +107,9 @@ typedef struct {
      * final es continuar el inventariado (WAIT_WEIGHT_USED), no volver a
      * reposo. */
     bool reg_completando_existente;
+
+    /* Ajuste seleccionado en la lista de Ajustes, mientras se explica/edita. */
+    setting_id_t settings_selected;
 } process_ctx_t;
 
 static app_state_t s_state = APP_STATE_IDLE;
@@ -153,7 +153,7 @@ static void start_weighing_for_state(app_state_t target_state)
 {
     float min_g = (target_state == APP_STATE_WAIT_WEIGHT_TOTAL ||
                     target_state == APP_STATE_REG_WAIT_WEIGHT_TOTAL)
-                       ? SCALE_MIN_TOTAL_WEIGHT_G
+                       ? settings_get(SETTING_SCALE_MIN_TOTAL_WEIGHT_G)
                        : 0.0f;
     scale_request_weighing(min_g);
 }
@@ -167,7 +167,7 @@ static void continue_weighing_for_state(app_state_t target_state)
 {
     float min_g = (target_state == APP_STATE_WAIT_WEIGHT_TOTAL ||
                     target_state == APP_STATE_REG_WAIT_WEIGHT_TOTAL)
-                       ? SCALE_MIN_TOTAL_WEIGHT_G
+                       ? settings_get(SETTING_SCALE_MIN_TOTAL_WEIGHT_G)
                        : 0.0f;
     scale_continue_weighing(min_g);
 }
@@ -189,10 +189,11 @@ static void check_screen_dim(void)
     uint32_t idle_ms = lv_disp_get_inactive_time(NULL);
     bsp_display_unlock();
 
-    if (!s_screen_dimmed && idle_ms >= SCREEN_DIM_TIMEOUT_MS) {
-        bsp_display_brightness_set(SCREEN_DIM_BRIGHTNESS);
+    uint32_t timeout_ms = (uint32_t)(settings_get(SETTING_SCREEN_DIM_TIMEOUT_MIN) * 60000.0f);
+    if (!s_screen_dimmed && idle_ms >= timeout_ms) {
+        bsp_display_brightness_set((uint8_t)settings_get(SETTING_SCREEN_DIM_BRIGHTNESS_PCT));
         s_screen_dimmed = true;
-    } else if (s_screen_dimmed && idle_ms < SCREEN_DIM_TIMEOUT_MS) {
+    } else if (s_screen_dimmed && idle_ms < timeout_ms) {
         bsp_display_brightness_set(100);
         s_screen_dimmed = false;
     }
@@ -219,14 +220,6 @@ static int units_from_weight(float peso_bruto_g)
 {
     return (int)lroundf(units_from_weight_f(peso_bruto_g));
 }
-
-/* Cuanto se puede alejar la cuenta en vivo de un numero entero (en
- * unidades, no en gramos - independiente del peso_unitario de cada
- * articulo) antes de avisar de que el peso_unitario guardado podria estar
- * mal calibrado, o de que en la caja hay algo que no cuadra (una pieza de
- * otro tipo, etc). 0.15 = un 15% de una unidad; ajustar aqui si en la
- * practica avisa demasiado o demasiado poco. */
-#define UNIT_ROUNDING_TOLERANCE 0.15f
 
 static void handle_nfc_tag(const char *uid_hex)
 {
@@ -442,7 +435,7 @@ static void route_existing_articulo(const master_item_t *existing)
          * la caja vacia (ver REG_ENTER_UNITS); si la tara ya se conocia,
          * se calcula ya mismo sin pesar nada mas (ver REG_ENTER_UNITS). */
         s_state = APP_STATE_REG_ENTER_UNITS;
-        ui_show_keypad("Unidades totales en la caja", false, 5);
+        ui_show_keypad("Unidades totales en la caja", false, 5, NULL);
     } else {
         /* Solo falta la tara, el peso_unitario ya se conocia: basta con
          * pesar la caja vacia, las unidades salen solas de ahi (ver
@@ -479,7 +472,7 @@ static void handle_scale_stable(float weight_g)
          * levantada nada mas empezar, antes de estabilizar), se ignora y
          * se sigue esperando. Confirmar sigue disponible como respaldo
          * manual en todo momento. */
-        if (fabsf(weight_g) <= SCALE_ZERO_THRESHOLD_G) {
+        if (fabsf(weight_g) <= settings_get(SETTING_SCALE_ZERO_THRESHOLD_G)) {
             if (s_ctx.tiene_lectura_usados) {
                 finish_used_weighing(s_ctx.pending_weight_g);
             } else {
@@ -540,7 +533,8 @@ static void handle_scale_reading(float weight_g, bool stable)
      * recorte a los limites lo pueda enmascarar. */
     float unidades_nuevas_f = (float)s_ctx.unidades_totales - units_from_weight_f(weight_g);
     bool peso_unitario_sospechoso =
-        fabsf(unidades_nuevas_f - roundf(unidades_nuevas_f)) > UNIT_ROUNDING_TOLERANCE;
+        fabsf(unidades_nuevas_f - roundf(unidades_nuevas_f)) >
+        (settings_get(SETTING_UNIT_ROUNDING_TOLERANCE_PCT) / 100.0f);
 
     if (unidades_nuevas_f < 0.0f) {
         unidades_nuevas_f = 0.0f;
@@ -689,7 +683,7 @@ static void handle_confirm_pressed(void)
             finish_master_completion();
         } else {
             s_state = APP_STATE_REG_ENTER_CALIBRE;
-            ui_show_keypad("Calibre (mm)", true, 6);
+            ui_show_keypad("Calibre (mm)", true, 6, NULL);
         }
         break;
 
@@ -703,17 +697,38 @@ static void handle_confirm_pressed(void)
                 ESP_LOGI(TAG, "Actualizar datos maestros %s: peso total = %.2f g",
                          s_ctx.codigo, s_ctx.pending_weight_g);
                 s_state = APP_STATE_REG_ENTER_UNITS;
-                ui_show_keypad("Unidades totales en la caja", false, 5);
+                ui_show_keypad("Unidades totales en la caja", false, 5, NULL);
             } else {
                 ESP_LOGI(TAG, "Alta material nuevo: peso total = %.2f g", s_ctx.pending_weight_g);
                 s_state = APP_STATE_REG_ENTER_CODE;
-                ui_show_keypad("Ultimos digitos del codigo (13 + estos digitos)", false, REG_CODIGO_MAX_DIGITS);
+                ui_show_keypad("Ultimos digitos del codigo (13 + estos digitos)", false, REG_CODIGO_MAX_DIGITS, NULL);
             }
             break;
 
         default:
             break;
         }
+        break;
+
+    case APP_STATE_SETTINGS_EXPLAIN: {
+        /* "Editar": abre el teclado con el valor actual precargado, para
+         * corregirlo en vez de tener que teclearlo entero de nuevo. */
+        const settings_def_t *def = settings_get_def(s_ctx.settings_selected);
+        char valor_inicial[24];
+        if (def->decimals > 0) {
+            snprintf(valor_inicial, sizeof(valor_inicial), "%.1f", (double)settings_get(def->id));
+        } else {
+            snprintf(valor_inicial, sizeof(valor_inicial), "%.0f", (double)settings_get(def->id));
+        }
+        s_state = APP_STATE_SETTINGS_EDIT;
+        ui_show_keypad(def->name, def->decimals > 0, 6, valor_inicial);
+        break;
+    }
+
+    case APP_STATE_SETTINGS_RESET_CONFIRM:
+        settings_reset_defaults();
+        s_state = APP_STATE_SETTINGS_LIST;
+        ui_show_settings_list();
         break;
 
     default:
@@ -769,7 +784,7 @@ static void handle_keypad_confirmed(const char *text)
         /* Codigo totalmente nuevo: sigue el alta completa (unidades, tara,
          * calibre, cabeza). */
         s_state = APP_STATE_REG_ENTER_UNITS;
-        ui_show_keypad("Unidades totales en la caja", false, 5);
+        ui_show_keypad("Unidades totales en la caja", false, 5, NULL);
         break;
     }
 
@@ -777,7 +792,7 @@ static void handle_keypad_confirmed(const char *text)
         int unidades = (int)strtol(text, NULL, 10);
         if (unidades <= 0) {
             /* invalido, se vuelve a pedir sin perder el resto del contexto */
-            ui_show_keypad("Unidades totales (numero mayor que 0)", false, 5);
+            ui_show_keypad("Unidades totales (numero mayor que 0)", false, 5, NULL);
             break;
         }
         s_ctx.unidades_totales = unidades;
@@ -804,7 +819,7 @@ static void handle_keypad_confirmed(const char *text)
     case APP_STATE_REG_ENTER_CALIBRE: {
         s_ctx.reg_calibre = strtof(text, NULL);
         s_state = APP_STATE_REG_ENTER_CABEZA;
-        ui_show_keypad("Cabeza (mm)", true, 6);
+        ui_show_keypad("Cabeza (mm)", true, 6, NULL);
         break;
     }
 
@@ -829,6 +844,29 @@ static void handle_keypad_confirmed(const char *text)
         break;
     }
 
+    case APP_STATE_SETTINGS_EDIT: {
+        const settings_def_t *def = settings_get_def(s_ctx.settings_selected);
+        float value = strtof(text, NULL);
+        if (settings_set(s_ctx.settings_selected, value) != ESP_OK) {
+            /* Fuera de rango: se vuelve a pedir sin perder el ajuste
+             * seleccionado, con el rango en el titulo para no fallar dos
+             * veces seguidas por lo mismo. */
+            char titulo[96];
+            if (def->decimals > 0) {
+                snprintf(titulo, sizeof(titulo), "%s (%.1f - %.1f)",
+                         def->name, (double)def->min_value, (double)def->max_value);
+            } else {
+                snprintf(titulo, sizeof(titulo), "%s (%.0f - %.0f)",
+                         def->name, (double)def->min_value, (double)def->max_value);
+            }
+            ui_show_keypad(titulo, def->decimals > 0, 6, text);
+            break;
+        }
+        s_state = APP_STATE_SETTINGS_LIST;
+        ui_show_settings_list();
+        break;
+    }
+
     default:
         break;
     }
@@ -848,7 +886,7 @@ static void handle_retry_pressed(void)
          * el codigo sin perder el resto del contexto (peso total ya
          * pesado, tag ya leido). */
         s_state = APP_STATE_REG_ENTER_CODE;
-        ui_show_keypad("Ultimos digitos del codigo (13 + estos digitos)", false, REG_CODIGO_MAX_DIGITS);
+        ui_show_keypad("Ultimos digitos del codigo (13 + estos digitos)", false, REG_CODIGO_MAX_DIGITS, NULL);
         break;
 
     case APP_STATE_WAIT_WEIGHT_USED:
@@ -913,6 +951,57 @@ static void handle_usb_mode_pressed(void)
     usb_msc_request_boot_and_restart();
 }
 
+/* Boton "Ajustes" en reposo (solo desde ahi: no tiene sentido entrar en
+ * mitad de una pesada o un alta en curso). */
+static void handle_settings_pressed(void)
+{
+    if (s_state != APP_STATE_IDLE) {
+        return;
+    }
+    s_state = APP_STATE_SETTINGS_LIST;
+    ui_show_settings_list();
+}
+
+/* Fila de la lista de ajustes tocada: guarda cual es y muestra su
+ * descripcion/valor actual/rango antes de dejar editarlo. */
+static void handle_settings_row_pressed(int setting_id)
+{
+    if (s_state != APP_STATE_SETTINGS_LIST) {
+        return;
+    }
+    if (setting_id < 0 || setting_id >= (int)SETTING_COUNT) {
+        return;
+    }
+    s_ctx.settings_selected = (setting_id_t)setting_id;
+    const settings_def_t *def = settings_get_def(s_ctx.settings_selected);
+
+    char valor_buf[24];
+    char rango_buf[40];
+    if (def->decimals > 0) {
+        snprintf(valor_buf, sizeof(valor_buf), "%.1f %s", (double)settings_get(def->id), def->unit);
+        snprintf(rango_buf, sizeof(rango_buf), "%.1f - %.1f %s",
+                 (double)def->min_value, (double)def->max_value, def->unit);
+    } else {
+        snprintf(valor_buf, sizeof(valor_buf), "%.0f %s", (double)settings_get(def->id), def->unit);
+        snprintf(rango_buf, sizeof(rango_buf), "%.0f - %.0f %s",
+                 (double)def->min_value, (double)def->max_value, def->unit);
+    }
+
+    s_state = APP_STATE_SETTINGS_EXPLAIN;
+    ui_show_settings_explain(def->name, def->description, valor_buf, rango_buf);
+}
+
+/* "Restablecer valores de fabrica" en la lista: pide confirmar antes de
+ * tocar los 8 ajustes a la vez. */
+static void handle_settings_reset_pressed(void)
+{
+    if (s_state != APP_STATE_SETTINGS_LIST) {
+        return;
+    }
+    s_state = APP_STATE_SETTINGS_RESET_CONFIRM;
+    ui_show_settings_reset_confirm();
+}
+
 static void handle_cancel_pressed(void)
 {
     switch (s_state) {
@@ -929,7 +1018,16 @@ static void handle_cancel_pressed(void)
     case APP_STATE_REG_WAIT_TARE:
     case APP_STATE_REG_ENTER_CALIBRE:
     case APP_STATE_REG_ENTER_CABEZA:
+    case APP_STATE_SETTINGS_LIST:
         go_idle();
+        break;
+    case APP_STATE_SETTINGS_EXPLAIN:
+    case APP_STATE_SETTINGS_EDIT:
+    case APP_STATE_SETTINGS_RESET_CONFIRM:
+        /* "Volver"/Cancelar dentro del menu de ajustes no sale a reposo,
+         * vuelve un paso atras dentro del propio menu. */
+        s_state = APP_STATE_SETTINGS_LIST;
+        ui_show_settings_list();
         break;
     default:
         break;
@@ -977,6 +1075,15 @@ static void app_task(void *arg)
             break;
         case APP_EVT_UI_UPDATE_MASTER_PRESSED:
             handle_update_master_pressed();
+            break;
+        case APP_EVT_UI_SETTINGS_PRESSED:
+            handle_settings_pressed();
+            break;
+        case APP_EVT_UI_SETTINGS_ROW_PRESSED:
+            handle_settings_row_pressed(evt.data.settings_row.setting_id);
+            break;
+        case APP_EVT_UI_SETTINGS_RESET_PRESSED:
+            handle_settings_reset_pressed();
             break;
         }
     }

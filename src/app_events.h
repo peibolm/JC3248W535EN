@@ -28,6 +28,9 @@ typedef enum {
     APP_EVT_UI_KEYPAD_CONFIRMED,
     APP_EVT_UI_USB_MODE_PRESSED,
     APP_EVT_UI_UPDATE_MASTER_PRESSED,
+    APP_EVT_UI_SETTINGS_PRESSED,       /* boton "Ajustes" en reposo */
+    APP_EVT_UI_SETTINGS_ROW_PRESSED,   /* fila de la lista de ajustes tocada */
+    APP_EVT_UI_SETTINGS_RESET_PRESSED, /* "Restablecer valores de fabrica" */
 } app_event_type_t;
 
 typedef struct {
@@ -46,6 +49,9 @@ typedef struct {
         struct {
             char text[APP_EVENT_KEYPAD_TEXT_MAX_LEN]; /* lo tecleado (digitos y opcionalmente un '.') */
         } keypad;
+        struct {
+            int setting_id; /* setting_id_t de settings.h, ver APP_EVT_UI_SETTINGS_ROW_PRESSED */
+        } settings_row;
     } data;
 } app_event_t;
 

@@ -9,17 +9,21 @@
 
 #include "scale_uart.h"
 #include "app_events.h"
+#include "settings.h"
 
 static const char *TAG = "scale_task";
 
 #define SCALE_BAUD_RATE 9600 /* confirmado con la báscula real: 9600 8N1 */
 
-/* Ventana de 1s (5 muestras de 200ms): se considera estable si en ese
- * segundo el peso no varia mas de 0.5g. */
 #define SCALE_SAMPLE_PERIOD_MS       200
-#define SCALE_STABLE_WINDOW_SAMPLES  5
-#define SCALE_WEIGHT_TOLERANCE_G     0.5f
-#define SCALE_STABILIZE_TIMEOUT_MS   15000
+
+/* Tolerancia, ventana de estabilidad y timeout son ajustables en vivo desde
+ * el menu de Ajustes (ver settings.h) - se leen con settings_get() en cada
+ * uso, no son constantes. SCALE_STABLE_WINDOW_SAMPLES_MAX es solo el tope
+ * para reservar el array de la ventana en la pila: el tamano de ventana
+ * REAL en cada pesada es settings_get(SETTING_SCALE_STABLE_WINDOW_SAMPLES),
+ * siempre <= este tope porque asi lo valida settings_set(). */
+#define SCALE_STABLE_WINDOW_SAMPLES_MAX 20
 
 static volatile bool s_weighing_active = false;
 static volatile float s_min_weight_g = 0.0f;
@@ -54,8 +58,9 @@ void scale_cancel_weighing(void)
 
 static void scale_poll_task(void *arg)
 {
-    float window[SCALE_STABLE_WINDOW_SAMPLES];
+    float window[SCALE_STABLE_WINDOW_SAMPLES_MAX];
     size_t window_count = 0;
+    size_t window_size = SCALE_STABLE_WINDOW_SAMPLES_MAX;
     TickType_t weighing_start = 0;
 
     while (1) {
@@ -71,6 +76,16 @@ static void scale_poll_task(void *arg)
 
         if (window_count == 0) {
             weighing_start = xTaskGetTickCount();
+            /* El tamano de ventana se fija solo al arrancar una pesada
+             * nueva, no en mitad de una: si cambiase a media ventana, las
+             * muestras ya acumuladas dejarian de tener sentido. */
+            int configured = (int)settings_get(SETTING_SCALE_STABLE_WINDOW_SAMPLES);
+            if (configured < 1) {
+                configured = 1;
+            } else if (configured > SCALE_STABLE_WINDOW_SAMPLES_MAX) {
+                configured = SCALE_STABLE_WINDOW_SAMPLES_MAX;
+            }
+            window_size = (size_t)configured;
         }
 
         uint8_t frame[64];
@@ -79,24 +94,24 @@ static void scale_poll_task(void *arg)
 
         if (n > 0 && scale_protocol_parse(frame, n, &weight_g) &&
             fabsf(weight_g) >= s_min_weight_g) {
-            if (window_count < SCALE_STABLE_WINDOW_SAMPLES) {
+            if (window_count < window_size) {
                 window[window_count++] = weight_g;
             } else {
-                memmove(&window[0], &window[1], (SCALE_STABLE_WINDOW_SAMPLES - 1) * sizeof(float));
-                window[SCALE_STABLE_WINDOW_SAMPLES - 1] = weight_g;
+                memmove(&window[0], &window[1], (window_size - 1) * sizeof(float));
+                window[window_size - 1] = weight_g;
             }
 
             bool is_stable = false;
             float avg = weight_g;
-            if (window_count == SCALE_STABLE_WINDOW_SAMPLES) {
+            if (window_count == window_size) {
                 float min_w = window[0], max_w = window[0], sum = 0.0f;
-                for (size_t i = 0; i < SCALE_STABLE_WINDOW_SAMPLES; i++) {
+                for (size_t i = 0; i < window_size; i++) {
                     if (window[i] < min_w) min_w = window[i];
                     if (window[i] > max_w) max_w = window[i];
                     sum += window[i];
                 }
-                is_stable = (max_w - min_w) <= SCALE_WEIGHT_TOLERANCE_G;
-                avg = sum / SCALE_STABLE_WINDOW_SAMPLES;
+                is_stable = (max_w - min_w) <= settings_get(SETTING_SCALE_WEIGHT_TOLERANCE_G);
+                avg = sum / window_size;
             }
 
             /* Lectura "en vivo" para dar feedback continuo en pantalla
@@ -133,8 +148,9 @@ static void scale_poll_task(void *arg)
             }
         }
 
+        uint32_t timeout_ms = (uint32_t)(settings_get(SETTING_SCALE_STABILIZE_TIMEOUT_S) * 1000.0f);
         if (s_weighing_active &&
-            (xTaskGetTickCount() - weighing_start) > pdMS_TO_TICKS(SCALE_STABILIZE_TIMEOUT_MS)) {
+            (xTaskGetTickCount() - weighing_start) > pdMS_TO_TICKS(timeout_ms)) {
             ESP_LOGW(TAG, "Timeout esperando peso estable");
             s_weighing_active = false;
 

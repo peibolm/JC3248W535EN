@@ -2,10 +2,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "esp_bsp.h"
 #include "esp_system.h"
 #include "app_events.h"
+#include "settings.h"
 
 static lv_obj_t *s_label_title;
 static lv_obj_t *s_label_detail;
@@ -26,6 +28,12 @@ static lv_obj_t *s_label_keypad_display;
 static lv_obj_t *s_btnmatrix_keypad;
 
 static lv_obj_t *s_table_recent;
+
+static lv_obj_t *s_btn_settings;       /* "Ajustes", en reposo, bajo "Modo USB" */
+static lv_obj_t *s_btn_settings_back;  /* "Volver", esquina de la lista de ajustes */
+static lv_obj_t *s_btn_settings_reset; /* "Restablecer valores de fabrica" */
+static lv_obj_t *s_cont_settings_list; /* contenedor con scroll de la lista */
+static lv_obj_t *s_settings_row_value[SETTING_COUNT]; /* label de valor de cada fila, para refrescar */
 
 /* Pantalla ui_show_wait_weight_used(): LED estable/inestable arriba a la
  * izquierda, instruccion corta bajo el titulo, y abajo 4 columnas
@@ -100,6 +108,31 @@ static void usb_mode_btn_event_cb(lv_event_t *e)
 {
     (void)e;
     app_event_t evt = {.type = APP_EVT_UI_USB_MODE_PRESSED};
+    app_events_post(&evt);
+}
+
+static void settings_btn_event_cb(lv_event_t *e)
+{
+    (void)e;
+    app_event_t evt = {.type = APP_EVT_UI_SETTINGS_PRESSED};
+    app_events_post(&evt);
+}
+
+static void settings_reset_btn_event_cb(lv_event_t *e)
+{
+    (void)e;
+    app_event_t evt = {.type = APP_EVT_UI_SETTINGS_RESET_PRESSED};
+    app_events_post(&evt);
+}
+
+/* Comun a las 8 filas de la lista de ajustes: cada fila lleva su
+ * setting_id_t guardado en el user_data (ver la creacion de las filas en
+ * ui_screens_init()), asi que un unico callback vale para todas. */
+static void settings_row_event_cb(lv_event_t *e)
+{
+    lv_obj_t *row = lv_event_get_target(e);
+    app_event_t evt = {.type = APP_EVT_UI_SETTINGS_ROW_PRESSED};
+    evt.data.settings_row.setting_id = (int)(uintptr_t)lv_obj_get_user_data(row);
     app_events_post(&evt);
 }
 
@@ -250,6 +283,10 @@ static void hide_interactive_widgets(void)
     set_widget_visible(s_btn_restart, false);
     set_widget_visible(s_btn_usb_mode, false);
     set_widget_visible(s_btn_update_master, false);
+    set_widget_visible(s_btn_settings, false);
+    set_widget_visible(s_btn_settings_back, false);
+    set_widget_visible(s_btn_settings_reset, false);
+    set_widget_visible(s_cont_settings_list, false);
     set_widget_visible(s_btnmatrix_keypad, false);
     set_widget_visible(s_label_keypad_display, false);
     set_widget_visible(s_table_recent, false);
@@ -402,6 +439,98 @@ void ui_screens_init(lv_disp_t *disp)
     lv_obj_set_style_text_font(label_btn_update_master, &lv_font_montserrat_12, 0);
     lv_obj_center(label_btn_update_master);
 
+    /* Justo debajo de "Modo USB", mismo estilo: entra en la lista de
+     * ajustes (solo disponible en reposo). */
+    s_btn_settings = lv_btn_create(scr);
+    lv_obj_set_size(s_btn_settings, 90, 36);
+    lv_obj_align(s_btn_settings, LV_ALIGN_TOP_LEFT, 6, 48);
+    lv_obj_set_style_bg_color(s_btn_settings, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_add_event_cb(s_btn_settings, settings_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_btn_settings = lv_label_create(s_btn_settings);
+    lv_label_set_text(label_btn_settings, "Ajustes");
+    lv_obj_set_style_text_font(label_btn_settings, &lv_font_montserrat_12, 0);
+    lv_obj_center(label_btn_settings);
+
+    /* "Volver" de la lista de ajustes: misma esquina/estilo que Reiniciar y
+     * Actualizar datos (nunca coinciden en pantalla con esta). Dispara
+     * Cancelar, igual que en el resto de la app. */
+    s_btn_settings_back = lv_btn_create(scr);
+    lv_obj_set_size(s_btn_settings_back, 90, 36);
+    lv_obj_align(s_btn_settings_back, LV_ALIGN_TOP_RIGHT, -6, 6);
+    lv_obj_set_style_bg_color(s_btn_settings_back, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_add_event_cb(s_btn_settings_back, cancel_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_btn_settings_back = lv_label_create(s_btn_settings_back);
+    lv_label_set_text(label_btn_settings_back, "Volver");
+    lv_obj_set_style_text_font(label_btn_settings_back, &lv_font_montserrat_12, 0);
+    lv_obj_center(label_btn_settings_back);
+
+    /* Lista de ajustes: contenedor con scroll (los 8 no caben a la vez),
+     * una fila por ajuste generada desde settings_get_def(), con una
+     * cabecera de seccion cada vez que cambia el grupo. */
+    s_cont_settings_list = lv_obj_create(scr);
+    lv_obj_set_size(s_cont_settings_list, 460, 206);
+    lv_obj_align(s_cont_settings_list, LV_ALIGN_TOP_MID, 0, 54);
+    lv_obj_set_style_bg_opa(s_cont_settings_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_cont_settings_list, 0, 0);
+    lv_obj_set_style_pad_all(s_cont_settings_list, 4, 0);
+    lv_obj_set_style_pad_row(s_cont_settings_list, 10, 0);
+    lv_obj_set_flex_flow(s_cont_settings_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(s_cont_settings_list, LV_DIR_VER);
+
+    const char *prev_group = NULL;
+    for (int i = 0; i < (int)SETTING_COUNT; i++) {
+        const settings_def_t *def = settings_get_def((setting_id_t)i);
+
+        if (!prev_group || strcmp(prev_group, def->group) != 0) {
+            lv_obj_t *hdr = lv_label_create(s_cont_settings_list);
+            char hdr_buf[24];
+            sanitize_for_display(def->group, hdr_buf, sizeof(hdr_buf));
+            lv_label_set_text(hdr, hdr_buf);
+            lv_obj_set_style_text_font(hdr, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(hdr, lv_palette_darken(LV_PALETTE_GREY, 1), 0);
+            prev_group = def->group;
+        }
+
+        lv_obj_t *row = lv_btn_create(s_cont_settings_list);
+        lv_obj_set_size(row, LV_PCT(100), 52);
+        lv_obj_set_style_bg_color(row, lv_color_white(), 0);
+        lv_obj_set_style_text_color(row, lv_color_black(), 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_user_data(row, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(row, settings_row_event_cb, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        char name_buf[40];
+        sanitize_for_display(def->name, name_buf, sizeof(name_buf));
+        lv_label_set_text(name_lbl, name_buf);
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_14, 0);
+
+        lv_obj_t *value_lbl = lv_label_create(row);
+        lv_label_set_text(value_lbl, "--");
+        lv_obj_set_style_text_font(value_lbl, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(value_lbl, lv_palette_main(LV_PALETTE_BLUE), 0);
+        s_settings_row_value[i] = value_lbl;
+    }
+
+    /* "Restablecer valores de fabrica": a proposito pequeno y con solo
+     * contorno (no relleno solido) - es una accion rara y que afecta a los
+     * 8 ajustes a la vez, no debe competir en tamano/llamada de atencion
+     * con las filas de uso normal ni invitar a tocarlo de paso. */
+    s_btn_settings_reset = lv_btn_create(scr);
+    lv_obj_set_size(s_btn_settings_reset, 260, 42);
+    lv_obj_align(s_btn_settings_reset, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_set_style_bg_opa(s_btn_settings_reset, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_btn_settings_reset, 2, 0);
+    lv_obj_set_style_border_color(s_btn_settings_reset, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_text_color(s_btn_settings_reset, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_add_event_cb(s_btn_settings_reset, settings_reset_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *label_btn_settings_reset = lv_label_create(s_btn_settings_reset);
+    lv_label_set_text(label_btn_settings_reset, "Restablecer valores de fabrica");
+    lv_obj_set_style_text_font(label_btn_settings_reset, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(label_btn_settings_reset, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_center(label_btn_settings_reset);
+
     bsp_display_unlock();
 
     ui_show_idle(NULL, 0);
@@ -419,6 +548,7 @@ void ui_show_idle(const ui_recent_item_t *items, size_t count)
     lv_label_set_text(s_label_detail, "Acerque el tag NFC de la caja al lector");
     set_widget_visible(s_btn_restart, true);
     set_widget_visible(s_btn_usb_mode, true);
+    set_widget_visible(s_btn_settings, true);
 
     lv_table_set_row_cnt(s_table_recent, (uint16_t)(count + 1));
     lv_table_set_cell_value(s_table_recent, 0, 0, "Descripcion");
@@ -734,16 +864,27 @@ void ui_show_fatal_error(const char *msg)
     bsp_display_unlock();
 }
 
-void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len)
+void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len, const char *valor_inicial)
 {
     if (max_len >= APP_EVENT_KEYPAD_TEXT_MAX_LEN) {
         max_len = APP_EVENT_KEYPAD_TEXT_MAX_LEN - 1;
     }
 
+    /* Los titulos de edicion de ajustes llevan tildes (nombres reales en
+     * espanol); la fuente compilada solo trae ASCII basico. Se sanea aqui,
+     * una vez, para que ningun llamador tenga que acordarse de hacerlo -
+     * en los titulos ya-ASCII de siempre esto no cambia nada. */
+    char titulo_buf[80];
+    sanitize_for_display(titulo, titulo_buf, sizeof(titulo_buf));
+
     bsp_display_lock(0);
     hide_interactive_widgets();
 
-    s_keypad_buffer[0] = '\0';
+    if (valor_inicial && valor_inicial[0]) {
+        strlcpy(s_keypad_buffer, valor_inicial, sizeof(s_keypad_buffer));
+    } else {
+        s_keypad_buffer[0] = '\0';
+    }
     s_keypad_allow_decimal = permitir_decimal;
     s_keypad_max_len = max_len;
     s_keypad_active = true;
@@ -767,11 +908,11 @@ void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len)
     lv_obj_set_width(s_label_title, 340);
     lv_obj_set_style_text_font(s_label_title, &lv_font_montserrat_18, 0);
     lv_obj_align(s_label_title, LV_ALIGN_TOP_LEFT, 10, 6);
-    set_title(titulo);
+    set_title(titulo_buf);
 
     set_widget_visible(s_label_detail, false);
 
-    lv_label_set_text(s_label_keypad_display, "0");
+    lv_label_set_text(s_label_keypad_display, s_keypad_buffer[0] ? s_keypad_buffer : "0");
     lv_obj_set_width(s_label_keypad_display, 340);
     lv_obj_align_to(s_label_keypad_display, s_label_title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
     set_widget_visible(s_label_keypad_display, true);
@@ -831,5 +972,96 @@ void ui_show_usb_mode(void)
         "Pulse Reiniciar (arriba a la derecha) para volver\n"
         "al funcionamiento normal.");
     set_widget_visible(s_btn_restart, true);
+    bsp_display_unlock();
+}
+
+/* Formatea el valor actual de un ajuste con sus decimales y unidad (p.ej.
+ * "3.0 g" o "12 %"), tal y como se muestra en la fila de la lista y en la
+ * pantalla de explicacion. */
+static void format_setting_value(const settings_def_t *def, char *out, size_t out_size)
+{
+    char unit_buf[8];
+    sanitize_for_display(def->unit, unit_buf, sizeof(unit_buf));
+
+    if (def->decimals > 0) {
+        snprintf(out, out_size, "%.1f %s", (double)settings_get(def->id), unit_buf);
+    } else {
+        snprintf(out, out_size, "%.0f %s", (double)settings_get(def->id), unit_buf);
+    }
+}
+
+void ui_show_settings_list(void)
+{
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title("Ajustes");
+    set_widget_visible(s_label_detail, false);
+
+    for (int i = 0; i < (int)SETTING_COUNT; i++) {
+        const settings_def_t *def = settings_get_def((setting_id_t)i);
+        char value_buf[24];
+        format_setting_value(def, value_buf, sizeof(value_buf));
+        lv_label_set_text(s_settings_row_value[i], value_buf);
+    }
+
+    set_widget_visible(s_cont_settings_list, true);
+    set_widget_visible(s_btn_settings_reset, true);
+    set_widget_visible(s_btn_settings_back, true);
+    bsp_display_unlock();
+}
+
+void ui_show_settings_explain(const char *nombre, const char *descripcion,
+                               const char *valor_actual, const char *rango)
+{
+    char nombre_buf[40];
+    sanitize_for_display(nombre, nombre_buf, sizeof(nombre_buf));
+
+    char desc_buf[220];
+    sanitize_for_display(descripcion, desc_buf, sizeof(desc_buf));
+
+    char valor_buf[24];
+    sanitize_for_display(valor_actual, valor_buf, sizeof(valor_buf));
+
+    char rango_buf[40];
+    sanitize_for_display(rango, rango_buf, sizeof(rango_buf));
+
+    char buf[340];
+    snprintf(buf, sizeof(buf),
+             "%s\n\nValor actual: %s\nRango valido: %s",
+             desc_buf, valor_buf, rango_buf);
+
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title(nombre_buf);
+    lv_label_set_text(s_label_detail, buf);
+
+    /* La descripcion cambia de longitud segun el ajuste, asi que los
+     * botones se anclan al borde real del texto ya puesto (no a una
+     * coordenada fija) para no solaparse nunca. */
+    lv_label_set_text(s_label_btn_confirm, "Editar");
+    lv_obj_set_size(s_btn_confirm, 150, 60);
+    lv_obj_align_to(s_btn_confirm, s_label_detail, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 24);
+    set_widget_visible(s_btn_confirm, true);
+
+    lv_obj_set_size(s_btn_cancel, 150, 60);
+    lv_obj_align_to(s_btn_cancel, s_label_detail, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 24);
+    set_widget_visible(s_btn_cancel, true);
+
+    bsp_display_unlock();
+}
+
+void ui_show_settings_reset_confirm(void)
+{
+    bsp_display_lock(0);
+    hide_interactive_widgets();
+    set_title("Restablecer valores de fabrica");
+    lv_label_set_text(s_label_detail,
+        "Los 8 ajustes de bascula y pantalla volveran a su valor de\n"
+        "fabrica. Esta accion no se puede deshacer.");
+
+    lv_label_set_text(s_label_btn_confirm, "Si, restablecer");
+    set_widget_visible(s_btn_confirm, true);
+    set_widget_visible(s_btn_cancel, true);
+
     bsp_display_unlock();
 }

@@ -147,13 +147,16 @@ void ui_show_fatal_error(const char *msg);
 /**
  * @brief Teclado numérico en pantalla (disposición tipo numpad) para dar de
  * alta un material nuevo: últimos dígitos del código, unidades totales,
- * calibre y cabeza.
+ * calibre y cabeza. También lo reutiliza la edición de ajustes.
  *
  * @param titulo          Texto de la pregunta (p.ej. "Ultimos digitos del codigo").
  * @param permitir_decimal Si true, la tecla "." está activa (para calibre/cabeza).
  * @param max_len         Longitud máxima de caracteres admitidos.
+ * @param valor_inicial   Texto con el que arranca el visor (p.ej. el valor actual
+ *                        de un ajuste, para corregirlo en vez de teclearlo entero).
+ *                        NULL o "" para arrancar vacío (comportamiento de siempre).
  */
-void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len);
+void ui_show_keypad(const char *titulo, bool permitir_decimal, int max_len, const char *valor_inicial);
 
 /**
  * @brief Muestra el peso recién detectado (estable) y pide confirmarlo o
@@ -171,6 +174,39 @@ void ui_show_confirm_weight(const char *titulo, float peso_g);
  * botón "Reiniciar" (visible en esta pantalla, además de en reposo).
  */
 void ui_show_usb_mode(void);
+
+/**
+ * @brief Lista de los ajustes de báscula/pantalla, agrupados por sección,
+ * con scroll (no caben los 8 a la vez). Cada fila muestra nombre + valor
+ * actual; tocarla dispara APP_EVT_UI_SETTINGS_ROW_PRESSED con su id.
+ * "Restablecer valores de fábrica" (contorno, deliberadamente pequeño y
+ * discreto: es una acción rara y de las que no se deshacen fácil, no debe
+ * competir en tamaño con las filas de uso normal) dispara
+ * APP_EVT_UI_SETTINGS_RESET_PRESSED. "Volver" (esquina) es Cancelar.
+ *
+ * Hay que llamarla también al volver de editar/explicar un ajuste, para
+ * refrescar el valor de la fila que se acaba de tocar.
+ */
+void ui_show_settings_list(void);
+
+/**
+ * @brief Pantalla intermedia antes de editar un ajuste: nombre, descripción
+ * de qué hace y qué pasa al subirlo/bajarlo, valor actual y rango válido.
+ * "Editar" (Confirmar) pasa al teclado; "Cancelar" vuelve a la lista.
+ *
+ * El título y el cuerpo pueden ocupar más o menos líneas según el ajuste;
+ * los botones se anclan al borde real del texto (no a una coordenada fija)
+ * para no solaparse nunca, sea cual sea la longitud.
+ */
+void ui_show_settings_explain(const char *nombre, const char *descripcion,
+                               const char *valor_actual, const char *rango);
+
+/**
+ * @brief Confirmación antes de restablecer los 8 ajustes a fábrica (afecta
+ * a todos a la vez, por eso pide confirmar). "Sí, restablecer" (Confirmar)
+ * ejecuta el reset; "Cancelar" vuelve a la lista sin tocar nada.
+ */
+void ui_show_settings_reset_confirm(void);
 
 #ifdef __cplusplus
 }
