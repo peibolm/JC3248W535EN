@@ -14,6 +14,7 @@
 #include "ui_screens.h"
 #include "csv_master.h"
 #include "csv_inventory.h"
+#include "csv_referencia.h"
 #include "scale_task.h"
 #include "esp_bsp.h"
 #include "display.h"
@@ -110,6 +111,12 @@ typedef struct {
 
     /* Ajuste seleccionado en la lista de Ajustes, mientras se explica/edita. */
     setting_id_t settings_selected;
+
+    /* Stock teorico del codigo actual, si tiene fila en
+     * inventario_referencia.csv (ver show_wait_weight_used()). */
+    bool tiene_referencia;
+    int referencia_nuevas;
+    int referencia_usadas;
 } process_ctx_t;
 
 static app_state_t s_state = APP_STATE_IDLE;
@@ -145,6 +152,22 @@ static void finish_master_update(void);
 static void finish_master_completion(void);
 static void link_tag_and_proceed(const master_item_t *existing);
 static void route_existing_articulo(const master_item_t *existing);
+
+/* Busca el stock teorico de s_ctx.codigo en inventario_referencia.csv (si
+ * el fichero existe y el codigo figura en el) y muestra la pantalla de
+ * retirar nuevos/usados. Es un asistente opcional para detectar posibles
+ * errores de conteo: sin fichero o sin ese codigo, el recuento sigue
+ * funcionando exactamente igual, solo sin comparar contra ningun teorico. */
+static void show_wait_weight_used(void)
+{
+    const referencia_item_t *ref = csv_referencia_find_by_codigo(s_ctx.codigo);
+    s_ctx.tiene_referencia = (ref != NULL);
+    s_ctx.referencia_nuevas = ref ? ref->unidades_nuevas : 0;
+    s_ctx.referencia_usadas = ref ? ref->unidades_usadas : 0;
+
+    ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g,
+                              s_ctx.tiene_referencia, s_ctx.referencia_nuevas, s_ctx.referencia_usadas);
+}
 
 /* Arma la pesada aplicando el filtro de peso minimo solo cuando el estado
  * de destino es una pesada de "caja completa" (normal o de alta de
@@ -287,7 +310,7 @@ static void finish_new_material_registration(void)
     s_state = APP_STATE_WAIT_WEIGHT_USED;
     s_ctx.tiene_lectura_usados = false;
     s_ctx.peso_total_g = s_ctx.reg_peso_total;
-    ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+    show_wait_weight_used();
     start_weighing_for_state(s_state);
 }
 
@@ -371,7 +394,7 @@ static void finish_master_completion(void)
     s_state = APP_STATE_WAIT_WEIGHT_USED;
     s_ctx.tiene_lectura_usados = false;
     s_ctx.peso_total_g = s_ctx.reg_peso_total;
-    ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+    show_wait_weight_used();
     start_weighing_for_state(s_state);
 }
 
@@ -401,7 +424,7 @@ static void link_tag_and_proceed(const master_item_t *existing)
     s_state = APP_STATE_WAIT_WEIGHT_USED;
     s_ctx.tiene_lectura_usados = false;
     s_ctx.peso_total_g = s_ctx.reg_peso_total;
-    ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+    show_wait_weight_used();
     start_weighing_for_state(s_state);
 }
 
@@ -460,7 +483,7 @@ static void handle_scale_stable(float weight_g)
         s_state = APP_STATE_WAIT_WEIGHT_USED;
         s_ctx.tiene_lectura_usados = false;
         s_ctx.peso_total_g = weight_g;
-        ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+        show_wait_weight_used();
         start_weighing_for_state(s_state);
         break;
 
@@ -929,7 +952,7 @@ static void handle_retry_pressed(void)
     case APP_STATE_INCONSISTENT_WEIGHT:
         s_state = APP_STATE_WAIT_WEIGHT_USED;
         s_ctx.tiene_lectura_usados = false;
-        ui_show_wait_weight_used(s_ctx.descripcion, s_ctx.unidades_totales, s_ctx.peso_total_g);
+        show_wait_weight_used();
         start_weighing_for_state(s_state);
         break;
 

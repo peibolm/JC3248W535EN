@@ -94,8 +94,16 @@ void ui_show_description_and_wait_weight(const char *descripcion);
  * falta esperar a que el peso se estabilice para poder pulsarlo. Incluye
  * también "Repetir pesada total" por si la pesada de la caja completa no
  * fue correcta.
+ *
+ * @param tiene_referencia   true si este código tiene fila en
+ *        inventario_referencia.csv (ver csv_referencia.h); si es false, los
+ *        otros dos parámetros se ignoran y ui_update_wait_weight_live() no
+ *        muestra ninguna diferencia (ni roja ni verde) para este artículo.
+ * @param referencia_nuevas  Stock teórico de nuevas para este código.
+ * @param referencia_usadas  Stock teórico de usadas para este código.
  */
-void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, float peso_total_g);
+void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, float peso_total_g,
+                               bool tiene_referencia, int referencia_nuevas, int referencia_usadas);
 
 /**
  * @brief Actualiza las unidades nuevas retiradas y usadas restantes (en
@@ -108,6 +116,11 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
  * peso_unitario guardado para este artículo. Si @p peso_unitario_sospechoso
  * es true (el desvío supera la tolerancia), el número se resalta para
  * avisar de que puede haber un error de calibración o algo raro en la caja.
+ *
+ * Si la pantalla se abrió con referencia (ver ui_show_wait_weight_used()),
+ * también actualiza, junto a cada número, la diferencia contra el stock
+ * teórico (redondeado al entero más cercano): un check verde si cuadra, o
+ * la diferencia en rojo si no. Sin referencia, ese hueco se deja en blanco.
  */
 void ui_update_wait_weight_live(float unidades_nuevas, float unidades_usadas, bool stable,
                                  bool peso_unitario_sospechoso);

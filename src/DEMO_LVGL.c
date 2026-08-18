@@ -14,6 +14,7 @@
 #include "sd_provision.h"
 #include "csv_master.h"
 #include "csv_inventory.h"
+#include "csv_referencia.h"
 #include "app_events.h"
 #include "ui_screens.h"
 #include "app_fsm.h"
@@ -24,6 +25,7 @@
 
 #define DATOS_MAESTROS_PATH "/sdcard/datos_maestros.csv"
 #define INVENTARIO_PATH     "/sdcard/inventario.csv"
+#define REFERENCIA_PATH     "/sdcard/inventario_referencia.csv"
 
 static const char *TAG = "DEMO_LVGL";
 
@@ -146,6 +148,9 @@ void setup()
     ui_show_fatal_error("No se pudo abrir/crear inventario.csv en la SD.");
     return;
   }
+  /* Opcional a proposito: si no existe, el conteo sigue igual, solo sin
+   * comparar con el stock teorico (ver csv_referencia.h). */
+  csv_referencia_load(REFERENCIA_PATH);
 
   logSection("Load settings");
   settings_init();

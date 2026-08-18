@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "esp_bsp.h"
 #include "esp_system.h"
@@ -45,6 +46,16 @@ static lv_obj_t *s_stat_value_peso_total;
 static lv_obj_t *s_stat_value_uds_totales;
 static lv_obj_t *s_stat_value_nuevas;
 static lv_obj_t *s_stat_value_usadas;
+static lv_obj_t *s_stat_diff_nuevas;  /* "(+2)"/check verde bajo el numero de nuevas, ver inventario_referencia.csv */
+static lv_obj_t *s_stat_diff_usadas;  /* idem, bajo el numero de usadas */
+
+/* Fijados una vez por ui_show_wait_weight_used(), consultados en cada
+ * lectura por ui_update_wait_weight_live() para no tener que pasarlos en
+ * cada llamada (igual que peso_total/uds_totales, que tambien son fijos
+ * durante todo el recuento de un articulo). */
+static bool s_referencia_activa = false;
+static int s_referencia_nuevas = 0;
+static int s_referencia_usadas = 0;
 
 static bool s_keypad_active = false;
 static bool s_keypad_allow_decimal = false;
@@ -379,6 +390,19 @@ void ui_screens_init(lv_disp_t *disp)
     s_stat_value_nuevas = create_stat_column(s_cont_stats, "Nuevas");
     s_stat_value_usadas = create_stat_column(s_cont_stats, "Usadas");
 
+    /* Fila de diferencia contra el stock teorico (inventario_referencia.csv),
+     * bajo el numero de nuevas/usadas - hijas de la misma columna, para que
+     * el layout de flex las apile debajo automaticamente sin posicionarlas
+     * a mano. Vacias por defecto: ui_show_wait_weight_used() decide si hay
+     * referencia para el articulo, ui_update_wait_weight_live() las rellena. */
+    s_stat_diff_nuevas = lv_label_create(lv_obj_get_parent(s_stat_value_nuevas));
+    lv_obj_set_style_text_font(s_stat_diff_nuevas, &lv_font_montserrat_14, 0);
+    lv_label_set_text(s_stat_diff_nuevas, "");
+
+    s_stat_diff_usadas = lv_label_create(lv_obj_get_parent(s_stat_value_usadas));
+    lv_obj_set_style_text_font(s_stat_diff_usadas, &lv_font_montserrat_14, 0);
+    lv_label_set_text(s_stat_diff_usadas, "");
+
     s_btn_confirm = lv_btn_create(scr);
     lv_obj_add_event_cb(s_btn_confirm, confirm_btn_event_cb, LV_EVENT_CLICKED, NULL);
     s_label_btn_confirm = lv_label_create(s_btn_confirm);
@@ -678,7 +702,8 @@ static void layout_bottom_row_3_buttons(void)
     lv_obj_align(s_btn_cancel, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
 }
 
-void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, float peso_total_g)
+void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, float peso_total_g,
+                               bool tiene_referencia, int referencia_nuevas, int referencia_usadas)
 {
     char titulo[80];
     sanitize_for_display(descripcion, titulo, sizeof(titulo));
@@ -687,6 +712,10 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
     snprintf(peso_total_buf, sizeof(peso_total_buf), "%.1f g", peso_total_g);
     char uds_totales_buf[12];
     snprintf(uds_totales_buf, sizeof(uds_totales_buf), "%d", unidades_totales);
+
+    s_referencia_activa = tiene_referencia;
+    s_referencia_nuevas = referencia_nuevas;
+    s_referencia_usadas = referencia_usadas;
 
     bsp_display_lock(0);
     hide_interactive_widgets();
@@ -721,6 +750,11 @@ void ui_show_wait_weight_used(const char *descripcion, int unidades_totales, flo
      * lectura de este. */
     lv_obj_set_style_text_color(s_stat_value_nuevas, lv_color_hex(0x202632), 0);
     lv_obj_set_style_text_color(s_stat_value_usadas, lv_color_hex(0x202632), 0);
+    /* Igual que el color de arriba: se limpia aqui para que la diferencia
+     * del articulo anterior no se quede pegada antes de la primera lectura
+     * de este (y para que, sin referencia, se quede en blanco sin más). */
+    lv_label_set_text(s_stat_diff_nuevas, "");
+    lv_label_set_text(s_stat_diff_usadas, "");
     set_widget_visible(s_cont_stats, true);
 
     layout_bottom_row_3_buttons();
@@ -755,6 +789,29 @@ void ui_show_confirm_articulo(const char *codigo, const char *descripcion)
     bsp_display_unlock();
 }
 
+/* Actualiza el hueco de diferencia bajo un numero (nuevas o usadas): sin
+ * referencia para este articulo se deja en blanco; si cuadra (redondeando
+ * el contado al entero mas cercano), un check verde; si no, la diferencia
+ * en rojo con signo, p.ej. "(+2)"/"(-1)". */
+static void update_diff_label(lv_obj_t *label, float contado, int teorico)
+{
+    if (!s_referencia_activa) {
+        lv_label_set_text(label, "");
+        return;
+    }
+
+    int diff = (int)lroundf(contado) - teorico;
+    if (diff == 0) {
+        lv_label_set_text(label, LV_SYMBOL_OK);
+        lv_obj_set_style_text_color(label, lv_palette_main(LV_PALETTE_GREEN), 0);
+    } else {
+        char buf[12];
+        snprintf(buf, sizeof(buf), "(%+d)", diff);
+        lv_label_set_text(label, buf);
+        lv_obj_set_style_text_color(label, lv_palette_main(LV_PALETTE_RED), 0);
+    }
+}
+
 void ui_update_wait_weight_live(float unidades_nuevas, float unidades_usadas, bool stable,
                                  bool peso_unitario_sospechoso)
 {
@@ -778,6 +835,8 @@ void ui_update_wait_weight_live(float unidades_nuevas, float unidades_usadas, bo
     lv_label_set_text(s_stat_value_usadas, usadas_buf);
     lv_obj_set_style_text_color(s_stat_value_nuevas, color, 0);
     lv_obj_set_style_text_color(s_stat_value_usadas, color, 0);
+    update_diff_label(s_stat_diff_nuevas, unidades_nuevas, s_referencia_nuevas);
+    update_diff_label(s_stat_diff_usadas, unidades_usadas, s_referencia_usadas);
     lv_led_set_color(s_led_stable, stable ? lv_palette_main(LV_PALETTE_GREEN) : lv_palette_main(LV_PALETTE_RED));
     bsp_display_unlock();
 }
